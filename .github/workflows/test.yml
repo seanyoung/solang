@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - main
+      - fixes
   pull_request:
   workflow_dispatch:
 
@@ -30,9 +31,29 @@ jobs:
       - name: Run cargo clippy
         run: cargo clippy --tests --bins -- -D warnings -D clippy::inconsistent-struct-constructor
 
-  linux:
-    name: Linux
+  linux-intel:
+    name: Linux Intel
     runs-on: ubuntu-20.04
+    container: ghcr.io/hyperledger-labs/solang:ci
+    steps:
+    - name: Checkout sources
+      # Make sure "git describe --tags" works for solang --version
+      # checkout@v2 requires git 2.18 or higher, which is not in our image
+      uses: actions/checkout@v1
+    - name: Rust stable
+      run: rustup default 1.56.1
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
+    - uses: actions/upload-artifact@master
+      with:
+        name: solang-linux
+        path: ./target/debug/solang
+
+  linux-arm:
+    name: Linux Arm
+    runs-on: linux-arm64
     container: ghcr.io/hyperledger-labs/solang:ci
     steps:
     - name: Checkout sources
@@ -172,7 +193,7 @@ jobs:
     name: Solana Integration test
     runs-on: ubuntu-20.04
     container: ubuntu:20.04
-    needs: linux
+    needs: linux-intel
     services:
       solana:
         image: solanalabs/solana:v1.8.1
@@ -206,7 +227,7 @@ jobs:
   substrate:
     name: Substrate Integration test
     runs-on: ubuntu-20.04
-    needs: linux
+    needs: linux-intel
     steps:
     - name: Checkout sources
       uses: actions/checkout@v2
@@ -237,7 +258,7 @@ jobs:
     name: Burrow Integration test
     runs-on: ubuntu-20.04
     container: ubuntu:20.04
-    needs: linux
+    needs: linux-intel
     services:
       burrow:
         image: hyperledger/burrow:0.34.4
@@ -270,7 +291,7 @@ jobs:
   vscode:
     name: Visual Code Extension
     runs-on: ubuntu-20.04
-    needs: linux
+    needs: linux-intel
     steps:
     - name: Checkout
       uses: actions/checkout@v2
