@@ -82,7 +82,7 @@ NoFunctionType: Type = {
     Uint => Type::Uint(<>),
     Int => Type::Int(<>),
     Bytes => Type::Bytes(<>),
-    <l:@L> "mapping" "(" <k:Precedence0> "=>" <v:Precedence0> ")" <r:@R> => {
+    <l:@L> "mapping" "(" <k:SolType> "=>" <v:SolType> ")" <r:@R> => {
         Type::Mapping(Loc::File(file_no, l, r), Box::new(k), Box::new(v))
     },
 }
@@ -196,13 +196,13 @@ ContractDefinition: Box<ContractDefinition> = {
 }
 
 EventParameter: EventParameter = {
-    <l:@L> <ty:Precedence0> <i:"indexed"?> <name:SolIdentifier?> <r:@R> => EventParameter{
+    <l:@L> <ty:SolType> <i:"indexed"?> <name:SolIdentifier?> <r:@R> => EventParameter{
         loc: Loc::File(file_no, l, r), ty, indexed: i.is_some(), name
     }
 }
 
 ErrorParameter: ErrorParameter = {
-    <l:@L> <ty:Precedence0> <name:SolIdentifier?> <r:@R> => ErrorParameter{
+    <l:@L> <ty:SolType> <name:SolIdentifier?> <r:@R> => ErrorParameter{
         loc: Loc::File(file_no, l, r), ty, name
     }
 }
@@ -230,7 +230,7 @@ EnumDefinition: Box<EnumDefinition> = {
 }
 
 VariableDefinition: Box<VariableDefinition> = {
-    <doc:DocComments> <l:@L> <ty:NoFunctionTyPrecedence0> <attrs:VariableAttribute*> <name:SolIdentifier> <e:("=" <Expression>)?> <r:@R> ";" => {
+    <doc:DocComments> <l:@L> <ty:SolTypeNoFunction> <attrs:VariableAttribute*> <name:SolIdentifier> <e:("=" <Expression>)?> <r:@R> ";" => {
         Box::new(VariableDefinition{
             doc, loc: Loc::File(file_no, l, r), ty, attrs, name, initializer: e,
         })
@@ -240,7 +240,7 @@ VariableDefinition: Box<VariableDefinition> = {
     //     // f is a variable with internal visibility referencing an external function
     //     function() external internal f;
     // }
-    <doc:DocComments> <l:@L> <ty:FunctionTyPrecedence0> <name:SolIdentifier> <e:("=" <Expression>)?> <r:@R> ";" => {
+    <doc:DocComments> <l:@L> <ty:SolTypeFunction> <name:SolIdentifier> <e:("=" <Expression>)?> <r:@R> ";" => {
         Box::new(VariableDefinition{
             doc, loc: Loc::File(file_no, l, r), ty, attrs: Vec::new(), name, initializer: e,
         })
@@ -378,11 +378,20 @@ FunctionCall: Expression = {
 
 Precedence0: Expression = {
     NoFunctionTyPrecedence0,
-    FunctionTyPrecedence0
+    SolTypeFunction
 }
 
-FunctionTyPrecedence0: Expression = {
+SolTypeFunction: Expression = {
     <l:@L> <ty:FunctionType> <r:@R> => Expression::Type(Loc::File(file_no, l, r), ty),
+}
+
+SolTypeNoFunction: Expression = {
+    NoFunctionTyPrecedence0
+}
+
+SolType: Expression = {
+    NoFunctionTyPrecedence0,
+    SolTypeFunction
 }
 
 NoFunctionTyPrecedence0: Expression = {
@@ -669,7 +678,7 @@ FunctionDefinition: Box<FunctionDefinition> = {
 }
 
 Using: Box<Using> = {
-    <l:@L> "using" <library:SolIdentifier> "for" <ty:Precedence0> <r:@R> ";" => Box::new(Using {
+    <l:@L> "using" <library:SolIdentifier> "for" <ty:SolType> <r:@R> ";" => Box::new(Using {
         loc: Loc::File(file_no, l, r),
         library,
         ty: Some(ty),
@@ -957,7 +966,7 @@ YulAssignment: YulStatement = {
 }
 
 YulVariableDeclaration: YulStatement = {
-    <l:@L>  "let" <names:YulTypedIdentifierList> <expr:(":=" <YulExpression>)?> <r:@R> =>
+    <l:@L> "let" <names:YulTypedIdentifierList> <expr:(":=" <YulExpression>)?> <r:@R> =>
     YulStatement::VariableDeclaration(Loc::File(file_no, l, r), names, expr),
 }
 
