@@ -653,6 +653,7 @@ pub enum Expression {
     ExternalFunctionCallRaw {
         loc: pt::Loc,
         ty: CallTy,
+        returns: Vec<Type>,
         address: Box<Expression>,
         args: Box<Expression>,
         value: Option<Box<Expression>>,

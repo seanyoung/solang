@@ -2075,6 +2075,7 @@ pub fn emit_function_call(
             value,
             gas,
             ty,
+            returns: _,
         } => {
             let args = expression(args, cfg, callee_contract_no, func, ns, vartab, opt);
             let address = expression(address, cfg, callee_contract_no, func, ns, vartab, opt);
@@ -2147,8 +2148,11 @@ pub fn emit_function_call(
             args,
             value,
             gas,
+            returns,
             ..
         } => {
+            let discard_returns = returns == &vec![Type::Void];
+
             if let ast::Expression::ExternalFunction {
                 function_no,
                 address,
@@ -2237,7 +2241,7 @@ pub fn emit_function_call(
                     },
                 );
 
-                if !ftype.returns.is_empty() {
+                if !ftype.returns.is_empty() && !discard_returns {
                     let mut returns = Vec::new();
                     let mut res = Vec::new();
 

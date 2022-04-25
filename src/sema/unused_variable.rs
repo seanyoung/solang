@@ -178,6 +178,7 @@ pub fn check_function_call(ns: &mut Namespace, exp: &Expression, symtable: &mut 
         Expression::ExternalFunctionCallRaw {
             loc: _,
             ty: _,
+            returns: _,
             address,
             args,
             value,

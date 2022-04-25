@@ -131,9 +131,9 @@ impl Expression {
         match self {
             Expression::Builtin(_, returns, ..)
             | Expression::InternalFunctionCall { returns, .. }
-            | Expression::ExternalFunctionCall { returns, .. } => returns.to_vec(),
+            | Expression::ExternalFunctionCall { returns, .. }
+            | Expression::ExternalFunctionCallRaw { returns, .. } => returns.to_vec(),
             Expression::List(_, list) => list.iter().map(|e| e.ty()).collect(),
-            Expression::ExternalFunctionCallRaw { .. } => vec![Type::Bool, Type::DynamicBytes],
             _ => vec![self.ty()],
         }
     }
@@ -1794,9 +1794,17 @@ pub fn expression(
 
             assign_expr(loc, var, expr, e, context, ns, symtable, diagnostics)
         }
-        pt::Expression::NamedFunctionCall(loc, ty, args) => {
-            named_call_expr(loc, ty, args, false, context, ns, symtable, diagnostics)
-        }
+        pt::Expression::NamedFunctionCall(loc, ty, args) => named_call_expr(
+            loc,
+            ty,
+            args,
+            false,
+            context,
+            ns,
+            symtable,
+            diagnostics,
+            resolve_to,
+        ),
         pt::Expression::New(loc, call) => {
             if context.constant {
                 diagnostics.push(Diagnostic::error(
@@ -5018,6 +5026,7 @@ pub fn call_position_args(
     ns: &mut Namespace,
     symtable: &mut Symtable,
     diagnostics: &mut Vec<Diagnostic>,
+    resolve_to: ResolveTo,
 ) -> Result<Expression, ()> {
     let mut name_matches = 0;
     let mut errors = Vec::new();
@@ -5095,7 +5104,7 @@ pub fn call_position_args(
             continue;
         }
 
-        let returns = function_returns(func);
+        let returns = function_returns(func, resolve_to);
         let ty = function_type(func, false);
 
         return Ok(Expression::InternalFunctionCall {
@@ -5152,6 +5161,7 @@ fn function_call_with_named_args(
     ns: &mut Namespace,
     symtable: &mut Symtable,
     diagnostics: &mut Vec<Diagnostic>,
+    resolve_to: ResolveTo,
 ) -> Result<Expression, ()> {
     let mut arguments = HashMap::new();
 
@@ -5260,7 +5270,7 @@ fn function_call_with_named_args(
             continue;
         }
 
-        let returns = function_returns(func);
+        let returns = function_returns(func, resolve_to);
         let ty = function_type(func, false);
 
         return Ok(Expression::InternalFunctionCall {
@@ -5428,6 +5438,7 @@ fn method_call_pos_args(
                     ns,
                     symtable,
                     diagnostics,
+                    resolve_to,
                 );
             } else {
                 diagnostics.push(Diagnostic::error(
@@ -5466,6 +5477,7 @@ fn method_call_pos_args(
                     ns,
                     symtable,
                     diagnostics,
+                    resolve_to,
                 );
             }
 
@@ -5497,6 +5509,7 @@ fn method_call_pos_args(
                         ns,
                         symtable,
                         diagnostics,
+                        resolve_to,
                     );
                 }
             }
@@ -5975,7 +5988,7 @@ fn method_call_pos_args(
                 };
 
                 let func = &ns.functions[*function_no];
-                let returns = function_returns(func);
+                let returns = function_returns(func, resolve_to);
                 let ty = function_type(func, true);
 
                 return Ok(Expression::ExternalFunctionCall {
@@ -6150,6 +6163,11 @@ fn method_call_pos_args(
             return Ok(Expression::ExternalFunctionCallRaw {
                 loc: *loc,
                 ty,
+                returns: if resolve_to == ResolveTo::Discard {
+                    vec![Type::Void]
+                } else {
+                    vec![Type::Bool, Type::DynamicBytes]
+                },
                 args: Box::new(args),
                 address: Box::new(var_expr.cast(
                     &var_expr.loc(),
@@ -6305,7 +6323,7 @@ fn resolve_using(
                 continue;
             }
 
-            let returns = function_returns(libfunc);
+            let returns = function_returns(libfunc, ResolveTo::Unknown);
             let ty = function_type(libfunc, false);
 
             return Ok(Some(Expression::InternalFunctionCall {
@@ -6350,6 +6368,7 @@ fn method_call_named_args(
     ns: &mut Namespace,
     symtable: &mut Symtable,
     diagnostics: &mut Vec<Diagnostic>,
+    resolve_to: ResolveTo,
 ) -> Result<Expression, ()> {
     if let pt::Expression::Variable(namespace) = var {
         // is it a call to super
@@ -6373,6 +6392,7 @@ fn method_call_named_args(
                     ns,
                     symtable,
                     diagnostics,
+                    resolve_to,
                 );
             } else {
                 diagnostics.push(Diagnostic::error(
@@ -6410,6 +6430,7 @@ fn method_call_named_args(
                     ns,
                     symtable,
                     diagnostics,
+                    resolve_to,
                 );
             }
 
@@ -6440,6 +6461,7 @@ fn method_call_named_args(
                         ns,
                         symtable,
                         diagnostics,
+                        resolve_to,
                     );
                 }
             }
@@ -6568,7 +6590,7 @@ fn method_call_named_args(
                 };
 
                 let func = &ns.functions[*function_no];
-                let returns = function_returns(func);
+                let returns = function_returns(func, resolve_to);
                 let ty = function_type(func, true);
 
                 return Ok(Expression::ExternalFunctionCall {
@@ -7022,6 +7044,7 @@ pub fn named_call_expr(
     ns: &mut Namespace,
     symtable: &mut Symtable,
     diagnostics: &mut Vec<Diagnostic>,
+    resolve_to: ResolveTo,
 ) -> Result<Expression, ()> {
     let mut nullsink = Vec::new();
 
@@ -7055,7 +7078,16 @@ pub fn named_call_expr(
         return Err(());
     }
 
-    let expr = named_function_call_expr(loc, ty, args, context, ns, symtable, diagnostics)?;
+    let expr = named_function_call_expr(
+        loc,
+        ty,
+        args,
+        context,
+        ns,
+        symtable,
+        diagnostics,
+        resolve_to,
+    )?;
 
     check_function_call(ns, &expr, symtable);
     if expr.tys().len() > 1 && !is_destructible {
@@ -7256,6 +7288,7 @@ pub fn function_call_expr(
                     ns,
                     symtable,
                     diagnostics,
+                    resolve_to,
                 )
             }
         }
@@ -7282,6 +7315,7 @@ pub fn named_function_call_expr(
     ns: &mut Namespace,
     symtable: &mut Symtable,
     diagnostics: &mut Vec<Diagnostic>,
+    resolve_to: ResolveTo,
 ) -> Result<Expression, ()> {
     let (ty, call_args, call_args_loc) = collect_call_args(ty, diagnostics)?;
 
@@ -7297,6 +7331,7 @@ pub fn named_function_call_expr(
             ns,
             symtable,
             diagnostics,
+            resolve_to,
         ),
         pt::Expression::Variable(id) => {
             if let Some(loc) = call_args_loc {
@@ -7317,6 +7352,7 @@ pub fn named_function_call_expr(
                 ns,
                 symtable,
                 diagnostics,
+                resolve_to,
             )
         }
         pt::Expression::ArraySubscript(..) => {
@@ -7337,8 +7373,8 @@ pub fn named_function_call_expr(
 }
 
 /// Get the return values for a function call
-fn function_returns(ftype: &Function) -> Vec<Type> {
-    if !ftype.returns.is_empty() {
+fn function_returns(ftype: &Function, resolve_to: ResolveTo) -> Vec<Type> {
+    if !ftype.returns.is_empty() && resolve_to != ResolveTo::Discard {
         ftype.returns.iter().map(|p| p.ty.clone()).collect()
     } else {
         vec![Type::Void]
@@ -7349,7 +7385,7 @@ fn function_returns(ftype: &Function) -> Vec<Type> {
 fn function_type(func: &Function, external: bool) -> Type {
     let params = func.params.iter().map(|p| p.ty.clone()).collect();
     let mutability = func.mutability.clone();
-    let returns = function_returns(func);
+    let returns = function_returns(func, ResolveTo::Unknown);
 
     if external {
         Type::ExternalFunction {
