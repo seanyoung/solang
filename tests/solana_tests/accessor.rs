@@ -153,3 +153,34 @@ fn constant() {
         ])]
     );
 }
+
+#[test]
+fn issue102() {
+    let mut vm = build_solidity(
+        r#"
+        contract Testing {
+            string[] string_vec;
+            function testStruct() public returns (bytes memory) {
+                string_vec.push("tea");
+                string_vec.push("coffe");
+                string[] memory rr = string_vec;
+                print("idx0: {}, idx1: {}".format(rr[0].length, rr[1].length));
+                bytes memory b1 = abi.encode(rr);
+                print(rr[0]);
+                print(rr[1]);
+                return b1;
+            }
+        }"#,
+    );
+
+    vm.constructor("Testing", &[]);
+
+    let returns = vm.function("testStruct", &[], &[], None);
+    assert_eq!(
+        returns,
+        vec![Token::FixedBytes(vec![
+            0, 91, 121, 69, 17, 39, 209, 87, 169, 94, 81, 10, 68, 17, 183, 52, 82, 28, 128, 159,
+            31, 73, 168, 235, 90, 61, 46, 198, 102, 241, 168, 79
+        ])]
+    );
+}
