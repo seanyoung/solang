@@ -21,9 +21,11 @@ use std::{
     fs::{create_dir_all, File},
     io::prelude::*,
     path::{Path, PathBuf},
+    process::exit,
 };
 
 mod doc;
+mod idl;
 mod languageserver;
 
 fn main() {
@@ -266,6 +268,48 @@ fn main() {
                         .action(ArgAction::Append),
                 ),
         )
+        .subcommand(
+            Command::new("metadata")
+                .about("Generate Solidity interface files from contract metadata")
+                .arg(
+                    Arg::new("INPUT")
+                        .help("Convert IDL files")
+                        .required(true)
+                        .value_parser(ValueParser::os_string())
+                        .multiple_values(true),
+                )
+                .arg(
+                    Arg::new("TARGET")
+                        .help("Target to build for")
+                        .long("target")
+                        .takes_value(true)
+                        .required(true)
+                        .value_parser(["solana", "substrate", "ewasm"]),
+                )
+                .arg(
+                    Arg::new("ADDRESS_LENGTH")
+                        .help("Address length on Substrate")
+                        .long("address-length")
+                        .takes_value(true)
+                        .value_parser(value_parser!(u64).range(4..1024))
+                        .default_value("32"),
+                )
+                .arg(
+                    Arg::new("VALUE_LENGTH")
+                        .help("Value length on Substrate")
+                        .long("value-length")
+                        .value_parser(value_parser!(u64).range(4..1024))
+                        .takes_value(true)
+                        .default_value("16"),
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .help("output file")
+                        .short('o')
+                        .long("output")
+                        .takes_value(true),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -276,6 +320,18 @@ fn main() {
         }
         Some(("compile", matches)) => compile(matches),
         Some(("doc", matches)) => doc(matches),
+        Some(("metadata", matches)) => {
+            let target = target_arg(matches);
+
+            // For Ethereum, we can generate an interface from an abi file
+            // For Substrate, we can generate an interface from a contract metadata file
+            if target == Target::Solana {
+                idl::idl(matches)
+            } else {
+                eprintln!("error: metadata for target {} not supported", target);
+                exit(2);
+            }
+        }
         _ => unreachable!(),
     }
 }
@@ -373,16 +429,16 @@ fn compile(matches: &ArgMatches) {
     let namespaces = namespaces.iter().collect::<Vec<_>>();
 
     if let Some("ast-dot") = matches.get_one::<String>("EMIT").map(|v| v.as_str()) {
-        std::process::exit(0);
+        exit(0);
     }
 
     if errors {
         if matches.contains_id("STD-JSON") {
             println!("{}", serde_json::to_string(&json).unwrap());
-            std::process::exit(0);
+            exit(0);
         } else {
             eprintln!("error: not all contracts are valid");
-            std::process::exit(1);
+            exit(1);
         }
     }
 
@@ -516,7 +572,7 @@ fn process_file(
 
         if let Err(err) = file.write_all(dot.as_bytes()) {
             eprintln!("{}: error: {}", dot_filename.display(), err);
-            std::process::exit(1);
+            exit(1);
         }
 
         return Ok(ns);
@@ -729,7 +785,7 @@ fn save_intermediates(binary: &solang::emit::binary::Binary, matches: &ArgMatche
                 Ok(o) => o,
                 Err(s) => {
                     println!("error: {}", s);
-                    std::process::exit(1);
+                    exit(1);
                 }
             };
 
@@ -752,7 +808,7 @@ fn save_intermediates(binary: &solang::emit::binary::Binary, matches: &ArgMatche
                 Ok(o) => o,
                 Err(s) => {
                     println!("error: {}", s);
-                    std::process::exit(1);
+                    exit(1);
                 }
             };
 
@@ -784,7 +840,7 @@ fn create_file(path: &Path) -> File {
                 parent.display(),
                 err
             );
-            std::process::exit(1);
+            exit(1);
         }
     }
 
@@ -792,7 +848,7 @@ fn create_file(path: &Path) -> File {
         Ok(file) => file,
         Err(err) => {
             eprintln!("error: cannot create file '{}': {}", path.display(), err,);
-            std::process::exit(1);
+            exit(1);
         }
     }
 }
@@ -819,7 +875,7 @@ fn target_arg(matches: &ArgMatches) -> Target {
             "error: address length cannot be modified for target '{}'",
             target
         );
-        std::process::exit(1);
+        exit(1);
     }
 
     if !target.is_substrate()
@@ -829,7 +885,7 @@ fn target_arg(matches: &ArgMatches) -> Target {
             "error: value length cannot be modified for target '{}'",
             target
         );
-        std::process::exit(1);
+        exit(1);
     }
 
     target
@@ -846,14 +902,14 @@ fn imports_arg(matches: &ArgMatches) -> FileResolver {
 
     if let Err(e) = resolver.add_import_path(&PathBuf::from(".")) {
         eprintln!("error: cannot add current directory to import path: {}", e);
-        std::process::exit(1);
+        exit(1);
     }
 
     if let Some(paths) = matches.get_many::<PathBuf>("IMPORTPATH") {
         for path in paths {
             if let Err(e) = resolver.add_import_path(path) {
                 eprintln!("error: import path '{}': {}", path.to_string_lossy(), e);
-                std::process::exit(1);
+                exit(1);
             }
         }
     }
