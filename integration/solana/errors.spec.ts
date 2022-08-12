@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { TransactionError } from '@solana/solidity';
 import expect from 'expect';
 import { loadContract } from './setup';

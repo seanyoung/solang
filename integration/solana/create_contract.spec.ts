@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { Signer } from '@solana/web3.js';
 import expect from 'expect';
 import { Contract, createProgramDerivedAddress, ProgramDerivedAddress } from '@solana/solidity';

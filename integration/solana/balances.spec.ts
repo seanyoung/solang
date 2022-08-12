@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import expect from 'expect';
 import { publicKeyToHex } from '@solana/solidity';
 import * as web3 from '@solana/web3.js';

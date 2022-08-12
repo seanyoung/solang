@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { Contract, publicKeyToHex } from '@solana/solidity';
 import { Keypair } from '@solana/web3.js';
 import expect from 'expect';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { getOrCreateAssociatedTokenAccount, createMint, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Keypair } from '@solana/web3.js';
 import { publicKeyToHex } from '@solana/solidity';

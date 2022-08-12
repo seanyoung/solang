@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { Connection, Keypair, LAMPORTS_PER_SOL, BpfLoader, BPF_LOADER_PROGRAM_ID } from '@solana/web3.js';
 import { Contract } from '@solana/solidity';
 import fs from 'fs';

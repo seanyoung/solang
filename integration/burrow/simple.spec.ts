@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { strictEqual } from 'assert';
 import { Contract, Client } from '@hyperledger/burrow';
 import { readFileSync } from 'fs';
