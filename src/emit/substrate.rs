@@ -548,6 +548,7 @@ impl SubstrateTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
     }
 
@@ -678,6 +679,7 @@ impl SubstrateTarget {
         data: PointerValue,
         end: PointerValue,
         end_is_data: bool,
+        ns: &ast::Namespace,
     ) {
         let in_bounds = binary.builder.build_int_compare(
             if end_is_data {
@@ -710,6 +712,7 @@ impl SubstrateTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
 
         binary.builder.position_at_end(success_block);
@@ -742,7 +745,7 @@ impl SubstrateTarget {
                     )
                 };
 
-                self.check_overrun(binary, function, *data, end, false);
+                self.check_overrun(binary, function, *data, end, false, ns);
 
                 arg
             }
@@ -969,7 +972,7 @@ impl SubstrateTarget {
 
                 *data = binary.builder.build_load(from, "data").into_pointer_value();
 
-                self.check_overrun(binary, function, *data, end, false);
+                self.check_overrun(binary, function, *data, end, false, ns);
 
                 v
             }
@@ -2480,6 +2483,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
         function: FunctionValue,
         slot: IntValue<'a>,
         index: IntValue<'a>,
+        ns: &ast::Namespace,
     ) -> IntValue<'a> {
         let slot_ptr = binary.builder.build_alloca(slot.get_type(), "slot");
         binary.builder.build_store(slot_ptr, slot);
@@ -2560,6 +2564,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
 
         binary.builder.position_at_end(retrieve_block);
@@ -2582,6 +2587,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
         slot: IntValue,
         index: IntValue,
         val: IntValue,
+        ns: &ast::Namespace,
     ) {
         let slot_ptr = binary.builder.build_alloca(slot.get_type(), "slot");
         binary.builder.build_store(slot_ptr, slot);
@@ -2662,6 +2668,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
 
         binary.builder.position_at_end(retrieve_block);
@@ -2812,7 +2819,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
         _ty: &ast::Type,
         slot: IntValue<'a>,
         load: bool,
-        _ns: &ast::Namespace,
+        ns: &ast::Namespace,
     ) -> Option<BasicValueEnum<'a>> {
         let slot_ptr = binary.builder.build_alloca(slot.get_type(), "slot");
         binary.builder.build_store(slot_ptr, slot);
@@ -2895,6 +2902,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
 
         binary.builder.position_at_end(retrieve_block);
@@ -3026,7 +3034,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
         binary.builder.build_unreachable();
     }
 
-    fn return_code<'b>(&self, binary: &'b Binary, _ret: IntValue<'b>) {
+    fn return_code<'b>(&self, binary: &'b Binary, _ret: IntValue<'b>, ns: &ast::Namespace) {
         // we can't return specific errors
         self.assert_failure(
             binary,
@@ -3036,6 +3044,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
     }
 
@@ -3073,7 +3082,13 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
         );
     }
 
-    fn return_abi<'b>(&self, binary: &'b Binary, data: PointerValue<'b>, length: IntValue) {
+    fn return_abi<'b>(
+        &self,
+        binary: &'b Binary,
+        data: PointerValue<'b>,
+        length: IntValue,
+        _ns: &ast::Namespace,
+    ) {
         binary.builder.build_call(
             binary.module.get_function("seal_return").unwrap(),
             &[
@@ -3087,7 +3102,13 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
         binary.builder.build_unreachable();
     }
 
-    fn assert_failure<'b>(&self, binary: &'b Binary, _data: PointerValue, _length: IntValue) {
+    fn assert_failure<'b>(
+        &self,
+        binary: &'b Binary,
+        _data: PointerValue,
+        _length: IntValue,
+        _ns: &ast::Namespace,
+    ) {
         // insert "unreachable" instruction; not that build_unreachable() tells the compiler
         // that this code path is not reachable and may be discarded.
         let asm_fn = binary.context.void_type().fn_type(&[], false);
@@ -3131,7 +3152,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
             args.push(self.decode_ty(binary, function, &param.ty, &mut argsdata, argsend, ns));
         }
 
-        self.check_overrun(binary, function, argsdata, argsend, true);
+        self.check_overrun(binary, function, argsdata, argsend, true, ns);
     }
 
     /// ABI encode into a vector for abi.encode* style builtin functions
@@ -3395,7 +3416,13 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
         (data, length)
     }
 
-    fn print(&self, binary: &Binary, string_ptr: PointerValue, string_len: IntValue) {
+    fn print(
+        &self,
+        binary: &Binary,
+        string_ptr: PointerValue,
+        string_len: IntValue,
+        _ns: &ast::Namespace,
+    ) {
         binary.builder.build_call(
             binary.module.get_function("seal_debug_message").unwrap(),
             &[string_ptr.into(), string_len.into()],
@@ -3616,6 +3643,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
                     .builder
                     .build_load(scratch_len, "string_len")
                     .into_int_value(),
+                ns,
             );
 
             binary.builder.position_at_end(success_block);
@@ -3725,6 +3753,7 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
                     .builder
                     .build_load(scratch_len, "string_len")
                     .into_int_value(),
+                ns,
             );
 
             binary.builder.position_at_end(success_block);
@@ -3809,13 +3838,19 @@ impl<'a> TargetRuntime<'a> for SubstrateTarget {
                     .ptr_type(AddressSpace::Generic)
                     .const_null(),
                 binary.context.i32_type().const_zero(),
+                ns,
             );
 
             binary.builder.position_at_end(success_block);
         }
     }
 
-    fn return_data<'b>(&self, binary: &Binary<'b>, _function: FunctionValue) -> PointerValue<'b> {
+    fn return_data<'b>(
+        &self,
+        binary: &Binary<'b>,
+        _function: FunctionValue,
+        _ns: &ast::Namespace,
+    ) -> PointerValue<'b> {
         let scratch_buf = binary.builder.build_pointer_cast(
             binary.scratch.unwrap().as_pointer_value(),
             binary.context.i8_type().ptr_type(AddressSpace::Generic),

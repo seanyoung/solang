@@ -11,8 +11,8 @@ use crate::sema::ast::Type;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicType, IntType};
 use inkwell::values::{
-    ArrayValue, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
-    UnnamedAddress,
+    ArrayValue, BasicMetadataValueEnum, BasicValueEnum, CallableValue, FunctionValue, IntValue,
+    PointerValue,
 };
 use inkwell::{context::Context, types::BasicTypeEnum};
 use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
@@ -76,8 +76,6 @@ impl SolanaTarget {
             ReturnCode::AbiEncodingInvalid,
             context.i64_type().const_int(2u64 << 32, false),
         );
-        // externals
-        target.declare_externals(&mut binary, ns);
 
         target.emit_functions(&mut binary, contract, ns);
 
@@ -105,14 +103,6 @@ impl SolanaTarget {
                 functions,
             }],
         );
-
-        binary.internalize(&[
-            "entrypoint",
-            "sol_log_",
-            "sol_alloc_free_",
-            // This entry is produced by llvm due to merging of stdlib.bc with solidity llvm ir
-            "sol_alloc_free_.1",
-        ]);
 
         binary
     }
@@ -156,9 +146,6 @@ impl SolanaTarget {
             context.i64_type().const_int(2u64 << 32, false),
         );
 
-        // externals
-        target.declare_externals(&mut binary, namespaces[0]);
-
         let mut contracts: Vec<Contract> = Vec::new();
 
         for ns in namespaces {
@@ -201,26 +188,15 @@ impl SolanaTarget {
 
         target.emit_dispatch(&mut binary, &contracts);
 
-        binary.internalize(&[
-            "entrypoint",
-            "sol_log_",
-            "sol_log_pubkey",
-            "sol_invoke_signed_c",
-            "sol_panic_",
-            "sol_alloc_free_",
-            "sol_get_return_data",
-            "sol_set_return_data",
-            "sol_create_program_address",
-            "sol_try_find_program_address",
-            "sol_sha256",
-            "sol_keccak256",
-            "sol_log_data",
-        ]);
-
         binary
     }
 
-    fn declare_externals(&self, binary: &mut Binary, ns: &ast::Namespace) {
+    fn syscall<'b>(
+        &self,
+        binary: &'b Binary,
+        name: &str,
+        ns: &ast::Namespace,
+    ) -> CallableValue<'b> {
         let void_ty = binary.context.void_type();
         let u8_ptr = binary.context.i8_type().ptr_type(AddressSpace::Generic);
         let u64_ty = binary.context.i64_type();
@@ -230,129 +206,109 @@ impl SolanaTarget {
             &Type::Ref(Box::new(Type::Slice(Box::new(Type::Bytes(1))))),
             ns,
         );
-
         let sol_bytes = binary
             .context
             .struct_type(&[u8_ptr.into(), u64_ty.into()], false)
             .ptr_type(AddressSpace::Generic);
 
-        let function = binary.module.add_function(
-            "sol_alloc_free_",
-            u8_ptr.fn_type(&[u8_ptr.into(), u64_ty.into()], false),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_log_",
-            void_ty.fn_type(&[u8_ptr.into(), u64_ty.into()], false),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_log_64_",
-            void_ty.fn_type(
-                &[
-                    u64_ty.into(),
-                    u64_ty.into(),
-                    u64_ty.into(),
-                    u64_ty.into(),
-                    u64_ty.into(),
-                ],
-                false,
+        let func = match name {
+            "sol_log_" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(544561597, false),
+                void_ty
+                    .fn_type(&[u8_ptr.into(), u64_ty.into()], false)
+                    .ptr_type(AddressSpace::Generic),
+                "sol_log_",
             ),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_sha256",
-            void_ty.fn_type(&[sol_bytes.into(), u32_ty.into(), u8_ptr.into()], false),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_keccak256",
-            void_ty.fn_type(&[sol_bytes.into(), u32_ty.into(), u8_ptr.into()], false),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_set_return_data",
-            void_ty.fn_type(&[u8_ptr.into(), u64_ty.into()], false),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_get_return_data",
-            u64_ty.fn_type(&[u8_ptr.into(), u64_ty.into(), u8_ptr.into()], false),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let fields = binary.context.opaque_struct_type("SolLogDataField");
-
-        fields.set_body(&[u8_ptr.into(), u64_ty.into()], false);
-
-        let function = binary.module.add_function(
-            "sol_log_data",
-            void_ty.fn_type(
-                &[fields.ptr_type(AddressSpace::Generic).into(), u64_ty.into()],
-                false,
+            "sol_log_64_" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(1546269048, false),
+                void_ty
+                    .fn_type(
+                        &[
+                            u64_ty.into(),
+                            u64_ty.into(),
+                            u64_ty.into(),
+                            u64_ty.into(),
+                            u64_ty.into(),
+                        ],
+                        false,
+                    )
+                    .ptr_type(AddressSpace::Generic),
+                name,
             ),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_create_program_address",
-            u64_ty.fn_type(
-                &[seeds.into(), u64_ty.into(), address.into(), address.into()],
-                false,
+            "sol_sha256" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(301243782, false),
+                void_ty
+                    .fn_type(&[sol_bytes.into(), u32_ty.into(), u8_ptr.into()], false)
+                    .ptr_type(AddressSpace::Generic),
+                name,
             ),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
-
-        let function = binary.module.add_function(
-            "sol_try_find_program_address",
-            u64_ty.fn_type(
-                &[
-                    seeds.into(),
-                    u64_ty.into(),
-                    address.into(),
-                    address.into(),
-                    u8_ptr.into(),
-                ],
-                false,
+            "sol_keccak256" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(3615046331, false),
+                void_ty
+                    .fn_type(&[sol_bytes.into(), u32_ty.into(), u8_ptr.into()], false)
+                    .ptr_type(AddressSpace::Generic),
+                name,
             ),
-            None,
-        );
-        function
-            .as_global_value()
-            .set_unnamed_address(UnnamedAddress::Local);
+            "sol_set_return_data" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(2720453611, false),
+                u64_ty
+                    .fn_type(&[u8_ptr.into(), u64_ty.into(), u8_ptr.into()], false)
+                    .ptr_type(AddressSpace::Generic),
+                name,
+            ),
+            "sol_get_return_data" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(1562527204, false),
+                u64_ty
+                    .fn_type(&[u8_ptr.into(), u64_ty.into(), u8_ptr.into()], false)
+                    .ptr_type(AddressSpace::Generic),
+                name,
+            ),
+            "sol_log_data" => {
+                let fields = binary.context.opaque_struct_type("SolLogDataField");
+
+                fields.set_body(&[u8_ptr.into(), u64_ty.into()], false);
+
+                binary.builder.build_int_to_ptr(
+                    binary.context.i64_type().const_int(1930933300, false),
+                    void_ty
+                        .fn_type(
+                            &[fields.ptr_type(AddressSpace::Generic).into(), u64_ty.into()],
+                            false,
+                        )
+                        .ptr_type(AddressSpace::Generic),
+                    name,
+                )
+            }
+            "sol_create_program_address" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(2474062396, false),
+                u64_ty
+                    .fn_type(
+                        &[seeds.into(), u64_ty.into(), address.into(), address.into()],
+                        false,
+                    )
+                    .ptr_type(AddressSpace::Generic),
+                name,
+            ),
+            "sol_try_find_program_address" => binary.builder.build_int_to_ptr(
+                binary.context.i64_type().const_int(1213221432, false),
+                u64_ty
+                    .fn_type(
+                        &[
+                            seeds.into(),
+                            u64_ty.into(),
+                            address.into(),
+                            address.into(),
+                            u8_ptr.into(),
+                        ],
+                        false,
+                    )
+                    .ptr_type(AddressSpace::Generic),
+                name,
+            ),
+            _ => unreachable!(),
+        };
+
+        CallableValue::try_from(func).unwrap()
     }
 
     /// Returns the SolAccountInfo of the executing binary
@@ -1324,7 +1280,7 @@ impl SolanaTarget {
 
         binary.builder.position_at_end(rc_not_zero);
 
-        self.return_code(binary, rc);
+        self.return_code(binary, rc, ns);
 
         binary.builder.position_at_end(rc_zero);
 
@@ -1400,6 +1356,7 @@ impl SolanaTarget {
             self.return_code(
                 binary,
                 binary.context.i64_type().const_int(5u64 << 32, false),
+                ns,
             );
 
             binary.builder.position_at_end(rc_zero);
@@ -1508,7 +1465,7 @@ impl SolanaTarget {
 
         binary.builder.position_at_end(rc_not_zero);
 
-        self.return_code(binary, rc);
+        self.return_code(binary, rc, ns);
 
         binary.builder.position_at_end(rc_zero);
 
@@ -1713,6 +1670,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         function: FunctionValue,
         slot: IntValue<'a>,
         index: IntValue<'a>,
+        ns: &ast::Namespace,
     ) -> IntValue<'a> {
         let data = self.contract_storage_data(binary);
 
@@ -1763,6 +1721,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
 
         binary.builder.position_at_end(get_block);
@@ -1781,6 +1740,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         slot: IntValue,
         index: IntValue,
         val: IntValue,
+        ns: &ast::Namespace,
     ) {
         let data = self.contract_storage_data(binary);
 
@@ -1830,6 +1790,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
 
         binary.builder.position_at_end(set_block);
@@ -1985,6 +1946,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         self.return_code(
             binary,
             binary.context.i64_type().const_int(5u64 << 32, false),
+            ns,
         );
 
         binary.builder.position_at_end(rc_zero);
@@ -2071,6 +2033,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             binary.context.i32_type().const_zero(),
+            ns,
         );
 
         binary.builder.position_at_end(retrieve_block);
@@ -2514,6 +2477,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 self.return_code(
                     binary,
                     binary.context.i64_type().const_int(5u64 << 32, false),
+                    ns,
                 );
 
                 binary.builder.position_at_end(rc_zero);
@@ -2564,6 +2528,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 self.return_code(
                     binary,
                     binary.context.i64_type().const_int(5u64 << 32, false),
+                    ns,
                 );
 
                 binary.builder.position_at_end(rc_zero);
@@ -2662,6 +2627,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 self.return_code(
                     binary,
                     binary.context.i64_type().const_int(5u64 << 32, false),
+                    ns,
                 );
 
                 binary.builder.position_at_end(rc_zero);
@@ -2786,10 +2752,16 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
             .build_return(Some(&binary.context.i64_type().const_int(0, false)));
     }
 
-    fn return_abi<'b>(&self, binary: &'b Binary, data: PointerValue<'b>, length: IntValue) {
+    fn return_abi<'b>(
+        &self,
+        binary: &'b Binary,
+        data: PointerValue<'b>,
+        length: IntValue,
+        ns: &ast::Namespace,
+    ) {
         // set return data
         binary.builder.build_call(
-            binary.module.get_function("sol_set_return_data").unwrap(),
+            self.syscall(binary, "sol_set_return_data", ns),
             &[
                 data.into(),
                 binary
@@ -2806,10 +2778,16 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
             .build_return(Some(&binary.context.i64_type().const_int(0, false)));
     }
 
-    fn assert_failure<'b>(&self, binary: &'b Binary, data: PointerValue, length: IntValue) {
+    fn assert_failure<'b>(
+        &self,
+        binary: &'b Binary,
+        data: PointerValue,
+        length: IntValue,
+        ns: &ast::Namespace,
+    ) {
         // the reason code should be null (and already printed)
         binary.builder.build_call(
-            binary.module.get_function("sol_set_return_data").unwrap(),
+            self.syscall(binary, "sol_set_return_data", ns),
             &[
                 data.into(),
                 binary
@@ -2897,14 +2875,20 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
             .decode(binary, function, args, data, length, spec, ns);
     }
 
-    fn print(&self, binary: &Binary, string_ptr: PointerValue, string_len: IntValue) {
+    fn print(
+        &self,
+        binary: &Binary,
+        string_ptr: PointerValue,
+        string_len: IntValue,
+        ns: &ast::Namespace,
+    ) {
         let string_len64 =
             binary
                 .builder
                 .build_int_z_extend(string_len, binary.context.i64_type(), "");
 
         binary.builder.build_call(
-            binary.module.get_function("sol_log_").unwrap(),
+            self.syscall(binary, "sol_log_", ns),
             &[string_ptr.into(), string_len64.into()],
             "",
         );
@@ -3092,20 +3076,10 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         ns: &ast::Namespace,
     ) -> BasicValueEnum<'a> {
         if func.name == "create_program_address" {
-            let func = binary
-                .module
-                .get_function("sol_create_program_address")
-                .unwrap();
+            let func = self.syscall(binary, "sol_create_program_address", ns);
 
             // first argument are the seeds
-            let seeds = binary.builder.build_pointer_cast(
-                args[0].into_pointer_value(),
-                func.get_first_param()
-                    .unwrap()
-                    .get_type()
-                    .into_pointer_type(),
-                "seeds",
-            );
+            let seeds = args[0];
 
             let seed_count = binary.context.i64_type().const_int(
                 args[0]
@@ -3142,20 +3116,10 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 .left()
                 .unwrap()
         } else if func.name == "try_find_program_address" {
-            let func = binary
-                .module
-                .get_function("sol_try_find_program_address")
-                .unwrap();
+            let func = self.syscall(binary, "sol_try_find_program_address", ns);
 
             // first argument are the seeds
-            let seeds = binary.builder.build_pointer_cast(
-                args[0].into_pointer_value(),
-                func.get_first_param()
-                    .unwrap()
-                    .get_type()
-                    .into_pointer_type(),
-                "seeds",
-            );
+            let seeds = args[0];
 
             let seed_count = binary.context.i64_type().const_int(
                 args[0]
@@ -3211,7 +3175,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         accounts: Option<(PointerValue<'b>, IntValue<'b>)>,
         seeds: Option<(PointerValue<'b>, IntValue<'b>)>,
         _ty: ast::CallTy,
-        _ns: &ast::Namespace,
+        ns: &ast::Namespace,
     ) {
         let ret = if let Some(address) = address {
             // build instruction
@@ -3323,7 +3287,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                 "ka_num",
             );
 
-            let external_call = binary.module.get_function("sol_invoke_signed_c").unwrap();
+            let external_call = self.syscall(binary, "sol_invoke_signed_c", ns);
 
             let (signer_seeds, signer_seeds_len) = if let Some((seeds, len)) = seeds {
                 (
@@ -3420,6 +3384,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
                     .ptr_type(AddressSpace::Generic)
                     .const_null(),
                 binary.context.i32_type().const_zero(),
+                ns,
             );
 
             binary.builder.position_at_end(success_block);
@@ -3431,6 +3396,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         &self,
         binary: &Binary<'b>,
         function: FunctionValue<'b>,
+        ns: &ast::Namespace,
     ) -> PointerValue<'b> {
         let null_u8_ptr = binary
             .context
@@ -3441,7 +3407,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         let length_as_64 = binary
             .builder
             .build_call(
-                binary.module.get_function("sol_get_return_data").unwrap(),
+                self.syscall(binary, "sol_get_return_data", ns),
                 &[
                     null_u8_ptr.into(),
                     binary.context.i64_type().const_zero().into(),
@@ -3538,7 +3504,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         );
 
         binary.builder.build_call(
-            binary.module.get_function("sol_get_return_data").unwrap(),
+            self.syscall(binary, "sol_get_return_data", ns),
             &[
                 binary
                     .builder
@@ -3564,7 +3530,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         v
     }
 
-    fn return_code<'b>(&self, binary: &'b Binary, ret: IntValue<'b>) {
+    fn return_code<'b>(&self, binary: &'b Binary, ret: IntValue<'b>, ns: &ast::Namespace) {
         binary.builder.build_return(Some(&ret));
     }
 
@@ -3699,7 +3665,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         );
 
         binary.builder.build_call(
-            binary.module.get_function("sol_log_data").unwrap(),
+            self.syscall(binary, "sol_log_data", ns),
             &[
                 fields.into(),
                 binary.context.i64_type().const_int(2, false).into(),
@@ -4070,10 +4036,10 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
         input_len: IntValue<'b>,
         ns: &ast::Namespace,
     ) -> IntValue<'b> {
-        let (fname, hashlen) = match hash {
-            HashTy::Keccak256 => ("sol_keccak256", 32),
-            HashTy::Ripemd160 => ("ripemd160", 20),
-            HashTy::Sha256 => ("sol_sha256", 32),
+        let hashlen = match hash {
+            HashTy::Keccak256 => 32,
+            HashTy::Ripemd160 => 20,
+            HashTy::Sha256 => 32,
             _ => unreachable!(),
         };
 
@@ -4086,20 +4052,23 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
 
         if hash == HashTy::Ripemd160 {
             binary.builder.build_call(
-                binary.module.get_function(fname).unwrap(),
+                binary.module.get_function("ripemd160").unwrap(),
                 &[input.into(), input_len.into(), res.into()],
                 "hash",
             );
         } else {
-            let u64_ty = binary.context.i64_type();
-
-            let sol_keccak256 = binary.module.get_function(fname).unwrap();
+            let func = match hash {
+                HashTy::Keccak256 => self.syscall(binary, "sol_keccak256", ns),
+                HashTy::Sha256 => self.syscall(binary, "sol_sha256", ns),
+                _ => unreachable!(),
+            };
 
             // The first argument is a SolBytes *, get the struct
-            let sol_bytes = sol_keccak256.get_type().get_param_types()[0]
-                .into_pointer_type()
-                .get_element_type()
-                .into_struct_type();
+            let u8_ptr = binary.context.i8_type().ptr_type(AddressSpace::Generic);
+            let u64_ty = binary.context.i64_type();
+            let sol_bytes = binary
+                .context
+                .struct_type(&[u8_ptr.into(), u64_ty.into()], false);
 
             let array = binary.build_alloca(function, sol_bytes, "sol_bytes");
 
@@ -4119,7 +4088,7 @@ impl<'a> TargetRuntime<'a> for SolanaTarget {
             );
 
             binary.builder.build_call(
-                sol_keccak256,
+                func,
                 &[
                     array.into(),
                     binary.context.i32_type().const_int(1, false).into(),

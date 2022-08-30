@@ -167,6 +167,7 @@ pub trait TargetRuntime<'a> {
         function: FunctionValue,
         slot: IntValue<'a>,
         index: IntValue<'a>,
+        ns: &Namespace,
     ) -> IntValue<'a>;
     fn set_storage_bytes_subscript(
         &self,
@@ -175,6 +176,7 @@ pub trait TargetRuntime<'a> {
         slot: IntValue<'a>,
         index: IntValue<'a>,
         value: IntValue<'a>,
+        ns: &Namespace,
     );
     fn storage_subscript(
         &self,
@@ -228,19 +230,31 @@ pub trait TargetRuntime<'a> {
     );
 
     /// Prints a string
-    fn print(&self, bin: &Binary, string: PointerValue, length: IntValue);
+    fn print(&self, bin: &Binary, string: PointerValue, length: IntValue, ns: &Namespace);
 
     /// Return success without any result
     fn return_empty_abi(&self, bin: &Binary);
 
     /// Return failure code
-    fn return_code<'b>(&self, bin: &'b Binary, ret: IntValue<'b>);
+    fn return_code<'b>(&self, bin: &'b Binary, ret: IntValue<'b>, ns: &Namespace);
 
     /// Return success with the ABI encoded result
-    fn return_abi<'b>(&self, bin: &'b Binary, data: PointerValue<'b>, length: IntValue);
+    fn return_abi<'b>(
+        &self,
+        bin: &'b Binary,
+        data: PointerValue<'b>,
+        length: IntValue,
+        ns: &Namespace,
+    );
 
     /// Return failure without any result
-    fn assert_failure<'b>(&self, bin: &'b Binary, data: PointerValue, length: IntValue);
+    fn assert_failure<'b>(
+        &self,
+        bin: &'b Binary,
+        data: PointerValue,
+        length: IntValue,
+        ns: &Namespace,
+    );
 
     fn builtin_function(
         &self,
@@ -310,7 +324,12 @@ pub trait TargetRuntime<'a> {
     ) -> BasicValueEnum<'b>;
 
     /// Return the return data from an external call (either revert error or return values)
-    fn return_data<'b>(&self, bin: &Binary<'b>, function: FunctionValue<'b>) -> PointerValue<'b>;
+    fn return_data<'b>(
+        &self,
+        bin: &Binary<'b>,
+        function: FunctionValue<'b>,
+        ns: &Namespace,
+    ) -> PointerValue<'b>;
 
     /// Return the value we received
     fn value_transferred<'b>(&self, binary: &Binary<'b>, ns: &Namespace) -> IntValue<'b>;
@@ -390,6 +409,7 @@ pub trait TargetRuntime<'a> {
                     .ptr_type(AddressSpace::Generic)
                     .const_null(),
                 binary.context.i32_type().const_zero(),
+                ns,
             );
 
             binary.builder.position_at_end(not_value_transfer);
@@ -1293,6 +1313,7 @@ pub trait TargetRuntime<'a> {
                         right,
                         BinaryOp::Add,
                         signed,
+                        ns,
                     )
                     .into()
                 } else {
@@ -1316,6 +1337,7 @@ pub trait TargetRuntime<'a> {
                         right,
                         BinaryOp::Subtract,
                         signed,
+                        ns,
                     )
                     .into()
                 } else {
@@ -1337,6 +1359,7 @@ pub trait TargetRuntime<'a> {
                     left,
                     right,
                     res_ty.is_signed_int(),
+                    ns,
                 )
                 .into()
             }
@@ -1418,6 +1441,7 @@ pub trait TargetRuntime<'a> {
                             .ptr_type(AddressSpace::Generic)
                             .const_null(),
                         bin.context.i32_type().const_zero(),
+                        ns,
                     );
 
                     bin.builder.position_at_end(success_block);
@@ -1516,6 +1540,7 @@ pub trait TargetRuntime<'a> {
                             .ptr_type(AddressSpace::Generic)
                             .const_null(),
                         bin.context.i32_type().const_zero(),
+                        ns,
                     );
 
                     bin.builder.position_at_end(success_block);
@@ -1662,6 +1687,7 @@ pub trait TargetRuntime<'a> {
                             .ptr_type(AddressSpace::Generic)
                             .const_null(),
                         bin.context.i32_type().const_zero(),
+                        ns,
                     );
 
                     bin.builder.position_at_end(success_block);
@@ -1760,6 +1786,7 @@ pub trait TargetRuntime<'a> {
                             .ptr_type(AddressSpace::Generic)
                             .const_null(),
                         bin.context.i32_type().const_zero(),
+                        ns,
                     );
 
                     bin.builder.position_at_end(success_block);
@@ -1828,7 +1855,7 @@ pub trait TargetRuntime<'a> {
 
                 let bits = left.into_int_value().get_type().get_bit_width();
 
-                let f = self.power(bin, *unchecked, bits, res_ty.is_signed_int());
+                let f = self.power(bin, *unchecked, bits, res_ty.is_signed_int(), ns);
 
                 bin.builder
                     .build_call(f, &[left.into(), right.into()], "power")
@@ -2191,6 +2218,7 @@ pub trait TargetRuntime<'a> {
                         .ptr_type(AddressSpace::Generic)
                         .const_null(),
                     bin.context.i32_type().const_zero(),
+                    ns,
                 );
 
                 bin.builder.position_at_end(cast);
@@ -2293,7 +2321,7 @@ pub trait TargetRuntime<'a> {
                     let slot = self
                         .expression(bin, a, vartab, function, ns)
                         .into_int_value();
-                    self.get_storage_bytes_subscript(bin, function, slot, index)
+                    self.get_storage_bytes_subscript(bin, function, slot, index, ns)
                         .into()
                 } else if ty.is_contract_storage() {
                     let array = self
@@ -2677,7 +2705,7 @@ pub trait TargetRuntime<'a> {
                     .left()
                     .unwrap()
             }
-            Expression::ReturnData(_) => self.return_data(bin, function).into(),
+            Expression::ReturnData(_) => self.return_data(bin, function, ns).into(),
             Expression::StorageArrayLength { array, elem_ty, .. } => {
                 let slot = self
                     .expression(bin, array, vartab, function, ns)
@@ -3570,6 +3598,7 @@ pub trait TargetRuntime<'a> {
                             slot,
                             offset,
                             value.into_int_value(),
+                            ns,
                         );
                     }
                     Instr::PushStorage {
@@ -3756,6 +3785,7 @@ pub trait TargetRuntime<'a> {
                                 .ptr_type(AddressSpace::Generic)
                                 .const_null(),
                             bin.context.i32_type().const_zero(),
+                            ns,
                         );
 
                         bin.builder.position_at_end(pop);
@@ -3875,6 +3905,7 @@ pub trait TargetRuntime<'a> {
                                 .ptr_type(AddressSpace::Generic)
                                 .const_null(),
                             bin.context.i32_type().const_zero(),
+                            ns,
                         );
                     }
                     Instr::AssertFailure { expr: Some(expr) } => {
@@ -3892,12 +3923,12 @@ pub trait TargetRuntime<'a> {
                             ns,
                         );
 
-                        self.assert_failure(bin, data, len);
+                        self.assert_failure(bin, data, len, ns);
                     }
                     Instr::Print { expr } => {
                         let expr = self.expression(bin, expr, &w.vars, function, ns);
 
-                        self.print(bin, bin.vector_bytes(expr), bin.vector_len(expr));
+                        self.print(bin, bin.vector_bytes(expr), bin.vector_len(expr), ns);
                     }
                     Instr::Call {
                         res,
@@ -4749,7 +4780,11 @@ pub trait TargetRuntime<'a> {
 
         if fallback.is_none() && receive.is_none() {
             // no need to check value transferred; we will abort either way
-            self.return_code(bin, bin.return_values[&ReturnCode::FunctionSelectorInvalid]);
+            self.return_code(
+                bin,
+                bin.return_values[&ReturnCode::FunctionSelectorInvalid],
+                ns,
+            );
 
             return;
         }
@@ -4768,7 +4803,7 @@ pub trait TargetRuntime<'a> {
                     self.return_empty_abi(bin);
                 }
                 None => {
-                    self.return_code(bin, bin.context.i32_type().const_int(2, false));
+                    self.return_code(bin, bin.context.i32_type().const_int(2, false), ns);
                 }
             }
         } else {
@@ -4806,7 +4841,7 @@ pub trait TargetRuntime<'a> {
                     self.return_empty_abi(bin);
                 }
                 None => {
-                    self.return_code(bin, bin.context.i32_type().const_int(2, false));
+                    self.return_code(bin, bin.context.i32_type().const_int(2, false), ns);
                 }
             }
 
@@ -4825,7 +4860,7 @@ pub trait TargetRuntime<'a> {
                     self.return_empty_abi(bin);
                 }
                 None => {
-                    self.return_code(bin, bin.context.i32_type().const_int(2, false));
+                    self.return_code(bin, bin.context.i32_type().const_int(2, false), ns);
                 }
             }
         }
@@ -4938,12 +4973,12 @@ pub trait TargetRuntime<'a> {
                 ns,
             );
 
-            self.return_abi(bin, data, length);
+            self.return_abi(bin, data, length, ns);
         }
 
         bin.builder.position_at_end(bail_block);
 
-        self.return_code(bin, ret.into_int_value());
+        self.return_code(bin, ret.into_int_value(), ns);
 
         cases.push((
             bin.context.i32_type().const_int(
@@ -5543,6 +5578,7 @@ pub trait TargetRuntime<'a> {
         left: IntValue<'a>,
         right: IntValue<'a>,
         signed: bool,
+        ns: &Namespace,
     ) -> IntValue<'a> {
         let bits = left.get_type().get_bit_width();
 
@@ -5619,6 +5655,7 @@ pub trait TargetRuntime<'a> {
                 right,
                 BinaryOp::Multiply,
                 signed,
+                ns,
             )
         } else {
             bin.builder.build_int_mul(left, right, "")
@@ -5631,6 +5668,7 @@ pub trait TargetRuntime<'a> {
         unchecked: bool,
         bits: u32,
         signed: bool,
+        ns: &Namespace,
     ) -> FunctionValue<'a> {
         /*
             int ipow(int base, int exp)
@@ -5707,6 +5745,7 @@ pub trait TargetRuntime<'a> {
             result.as_basic_value().into_int_value(),
             base.as_basic_value().into_int_value(),
             signed,
+            ns,
         );
 
         bin.builder.build_unconditional_branch(nomultiply);
@@ -5739,6 +5778,7 @@ pub trait TargetRuntime<'a> {
             base.as_basic_value().into_int_value(),
             base.as_basic_value().into_int_value(),
             signed,
+            ns,
         );
 
         base.add_incoming(&[(&base2, notdone)]);
@@ -5761,6 +5801,7 @@ pub trait TargetRuntime<'a> {
         right: IntValue<'a>,
         op: BinaryOp,
         signed: bool,
+        ns: &Namespace,
     ) -> IntValue<'a> {
         let ret_ty = bin.context.struct_type(
             &[
@@ -5800,6 +5841,7 @@ pub trait TargetRuntime<'a> {
                 .ptr_type(AddressSpace::Generic)
                 .const_null(),
             bin.context.i32_type().const_zero(),
+            ns,
         );
 
         bin.builder.position_at_end(success_block);
