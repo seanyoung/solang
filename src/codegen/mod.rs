@@ -500,7 +500,10 @@ impl CodeLocation for Expression {
 
 impl Recurse for Expression {
     type ArgType = Expression;
-    fn recurse<T>(&self, cx: &mut T, f: fn(expr: &Expression, ctx: &mut T) -> bool) {
+    fn recurse<T, F>(&self, cx: &mut T, f: F)
+    where
+        F: Copy + Fn(&Self::ArgType, &mut T) -> bool,
+    {
         if !f(self, cx) {
             return;
         }

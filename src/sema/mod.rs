@@ -389,5 +389,7 @@ fn resolve_pragma(
 pub trait Recurse {
     type ArgType;
     /// recurse over a structure
-    fn recurse<T>(&self, cx: &mut T, f: fn(expr: &Self::ArgType, ctx: &mut T) -> bool);
+    fn recurse<T, F>(&self, cx: &mut T, f: F)
+    where
+        F: Copy + Fn(&Self::ArgType, &mut T) -> bool;
 }

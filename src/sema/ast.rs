@@ -781,7 +781,10 @@ pub struct CallArgs {
 
 impl Recurse for CallArgs {
     type ArgType = Expression;
-    fn recurse<T>(&self, cx: &mut T, f: fn(expr: &Expression, ctx: &mut T) -> bool) {
+    fn recurse<T, F>(&self, cx: &mut T, f: F)
+    where
+        F: Fn(&Self::ArgType, &mut T) -> bool,
+    {
         if let Some(gas) = &self.gas {
             f(gas, cx);
         }
@@ -799,7 +802,10 @@ impl Recurse for CallArgs {
 
 impl Recurse for Expression {
     type ArgType = Expression;
-    fn recurse<T>(&self, cx: &mut T, f: fn(expr: &Expression, ctx: &mut T) -> bool) {
+    fn recurse<T, F>(&self, cx: &mut T, f: F)
+    where
+        F: Copy + Fn(&Expression, &mut T) -> bool,
+    {
         if f(self, cx) {
             match self {
                 Expression::StructLiteral(_, _, exprs)
@@ -1259,7 +1265,10 @@ impl OptionalCodeLocation for DestructureField {
 
 impl Recurse for Statement {
     type ArgType = Statement;
-    fn recurse<T>(&self, cx: &mut T, f: fn(stmt: &Statement, ctx: &mut T) -> bool) {
+    fn recurse<T, F>(&self, cx: &mut T, f: F)
+    where
+        F: Copy + Fn(&Self::ArgType, &mut T) -> bool,
+    {
         if f(self, cx) {
             match self {
                 Statement::Block { statements, .. } => {

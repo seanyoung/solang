@@ -202,7 +202,10 @@ pub struct CaseBlock {
 
 impl Recurse for YulExpression {
     type ArgType = YulExpression;
-    fn recurse<T>(&self, cx: &mut T, f: fn(expr: &YulExpression, ctx: &mut T) -> bool) {
+    fn recurse<T, F>(&self, cx: &mut T, f: F)
+    where
+        F: Copy + Fn(&Self::ArgType, &mut T) -> bool,
+    {
         if !f(self, cx) {
             return;
         }

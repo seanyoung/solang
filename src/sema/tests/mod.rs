@@ -145,42 +145,42 @@ fn constant_overflow_checks() {
     let file = r#"
     contract test_contract {
         function test_params(uint8 usesa, int8 sesa) public {}
-    
+
         function test_add(int8 input) public returns (uint8) {
             // value 133 does not fit into type int8.
             int8 add_ovf = 127 + 6;
-    
+
             // negative value -1 does not fit into type uint8. Cannot implicitly convert signed literal to unsigned type.
             uint8 negative = 3 - 4;
-    
+
             // value 133 does not fit into type int8.
             int8 mixed = 126 + 7 + input;
-    
+
             // negative value -1 does not fit into type uint8. Cannot implicitly convert signed literal to unsigned type.
             return 1 - 2;
         }
-    
+
         function test_mul(int8 input) public {
             // value 726 does not fit into type int8.
             int8 mul_ovf = 127 * 6;
-    
+
             // value 882 does not fit into type int8.
             int8 mixed = 126 * 7 * input;
         }
-    
+
         function test_shift(int8 input) public {
             // value 128 does not fit into type int8.
             int8 mul_ovf = 1 << 7;
-    
+
             // value 128 does not fit into type int8.
             int8 mixed = (1 << 7) + input;
         }
-    
+
         function test_call() public {
             // negative value -1 does not fit into type uint8. Cannot implicitly convert signed literal to unsigned type.
             // value 129 does not fit into type int8.
             test_params(1 - 2, 127 + 2);
-    
+
             // negative value -1 does not fit into type uint8. Cannot implicitly convert signed literal to unsigned type.
             // value 129 does not fit into type int8.
             test_params({usesa: 1 - 2, sesa: 127 + 2});
@@ -200,7 +200,7 @@ fn constant_overflow_checks() {
 
         }
     }
-    
+
         "#;
     let ns = parse(file);
     let errors = ns.diagnostics.errors();

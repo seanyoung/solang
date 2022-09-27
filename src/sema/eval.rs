@@ -7,14 +7,13 @@ use num_traits::One;
 use num_traits::ToPrimitive;
 use num_traits::Zero;
 
-use super::ast::{Diagnostic, Expression, Namespace};
+use super::{
+    ast::{Diagnostic, Expression, Namespace, Type},
+    Recurse,
+};
 use solang_parser::pt;
-use solang_parser::pt::CodeLocation;
+use solang_parser::pt::{CodeLocation, Loc};
 use std::ops::{Add, Mul, Shl, Shr, Sub};
-
-use crate::sema::ast::RetrieveType;
-use crate::sema::ast::Type;
-use solang_parser::pt::Loc;
 
 /// Resolve an expression where a compile-time constant is expected
 pub fn eval_const_number(
@@ -204,86 +203,86 @@ pub fn eval_const_rational(
 
 fn eval_constants_in_expression(
     expr: &Expression,
-    ns: &mut Namespace,
-    results: &mut Vec<BigInt>,
-) -> Expression {
+    ns: &Namespace,
+    results: &mut Vec<(Type, BigInt)>,
+) -> Option<Expression> {
     match expr {
-        Expression::Add(loc, ty, unchecked, left, right) => {
+        Expression::Add(loc, ty, _, left, right) => {
             let left = eval_constants_in_expression(left, ns, results);
             let right = eval_constants_in_expression(right, ns, results);
 
-            if let (Expression::NumberLiteral(_, _, left), Expression::NumberLiteral(_, _, right)) =
-                (&left, &right)
+            if let (
+                Some(Expression::NumberLiteral(_, _, left)),
+                Some(Expression::NumberLiteral(_, _, right)),
+            ) = (&left, &right)
             {
-                results.push(left.add(right));
-                Expression::NumberLiteral(*loc, ty.clone(), left.add(right))
+                results.pop();
+                results.pop();
+                results.push((ty.clone(), left.add(right)));
+                Some(Expression::NumberLiteral(*loc, ty.clone(), left.add(right)))
             } else {
-                Expression::Add(
-                    *loc,
-                    ty.clone(),
-                    *unchecked,
-                    Box::new(left),
-                    Box::new(right),
-                )
+                None
             }
         }
-        Expression::Subtract(loc, ty, unchecked, left, right) => {
+        Expression::Subtract(loc, ty, _, left, right) => {
             let left = eval_constants_in_expression(left, ns, results);
             let right = eval_constants_in_expression(right, ns, results);
 
-            if let (Expression::NumberLiteral(_, _, left), Expression::NumberLiteral(_, _, right)) =
-                (&left, &right)
+            if let (
+                Some(Expression::NumberLiteral(_, _, left)),
+                Some(Expression::NumberLiteral(_, _, right)),
+            ) = (&left, &right)
             {
-                results.push(left.sub(right));
-                Expression::NumberLiteral(*loc, ty.clone(), left.sub(right))
+                results.pop();
+                results.pop();
+                results.push((ty.clone(), left.sub(right)));
+                Some(Expression::NumberLiteral(*loc, ty.clone(), left.sub(right)))
             } else {
-                Expression::Subtract(
-                    *loc,
-                    ty.clone(),
-                    *unchecked,
-                    Box::new(left),
-                    Box::new(right),
-                )
+                None
             }
         }
 
-        Expression::Multiply(loc, ty, unchecked, left, right) => {
+        Expression::Multiply(loc, ty, _, left, right) => {
             let left = eval_constants_in_expression(left, ns, results);
             let right = eval_constants_in_expression(right, ns, results);
 
-            if let (Expression::NumberLiteral(_, _, left), Expression::NumberLiteral(_, _, right)) =
-                (&left, &right)
+            if let (
+                Some(Expression::NumberLiteral(_, _, left)),
+                Some(Expression::NumberLiteral(_, _, right)),
+            ) = (&left, &right)
             {
-                results.push(left.mul(right.to_u32().unwrap()));
-                Expression::NumberLiteral(*loc, ty.clone(), left.mul(right.to_u32().unwrap()))
-            } else {
-                Expression::Multiply(
+                results.pop();
+                results.pop();
+                results.push((ty.clone(), left.mul(right.to_u32().unwrap())));
+                Some(Expression::NumberLiteral(
                     *loc,
                     ty.clone(),
-                    *unchecked,
-                    Box::new(left),
-                    Box::new(right),
-                )
+                    left.mul(right.to_u32().unwrap()),
+                ))
+            } else {
+                None
             }
         }
 
-        Expression::Power(loc, ty, unchecked, left, right) => {
+        Expression::Power(loc, ty, _, left, right) => {
             let left = eval_constants_in_expression(left, ns, results);
             let right = eval_constants_in_expression(right, ns, results);
 
-            if let (Expression::NumberLiteral(_, _, left), Expression::NumberLiteral(_, _, right)) =
-                (&left, &right)
+            if let (
+                Some(Expression::NumberLiteral(_, _, left)),
+                Some(Expression::NumberLiteral(_, _, right)),
+            ) = (&left, &right)
             {
-                results.push(left.pow(right.to_u32().unwrap()));
-                Expression::NumberLiteral(*loc, ty.clone(), left.pow(right.to_u32().unwrap()))
-            } else {
-                Expression::Power(
+                results.pop();
+                results.pop();
+                results.push((ty.clone(), left.pow(right.to_u32().unwrap())));
+                Some(Expression::NumberLiteral(
                     *loc,
                     ty.clone(),
-                    *unchecked,
-                    Box::new(left),
-                    Box::new(right),
-                )
+                    left.pow(right.to_u32().unwrap()),
+                ))
+            } else {
+                None
             }
         }
 
@@ -291,13 +290,21 @@ fn eval_constants_in_expression(
             let left = eval_constants_in_expression(left, ns, results);
             let right = eval_constants_in_expression(right, ns, results);
 
-            if let (Expression::NumberLiteral(_, _, left), Expression::NumberLiteral(_, _, right)) =
-                (&left, &right)
+            if let (
+                Some(Expression::NumberLiteral(_, _, left)),
+                Some(Expression::NumberLiteral(_, _, right)),
+            ) = (&left, &right)
             {
-                results.push(left.shl(right.to_u32().unwrap()));
-                Expression::NumberLiteral(*loc, ty.clone(), left.shl(right.to_u32().unwrap()))
+                results.pop();
+                results.pop();
+                results.push((ty.clone(), left.shl(right.to_u32().unwrap())));
+                Some(Expression::NumberLiteral(
+                    *loc,
+                    ty.clone(),
+                    left.shl(right.to_u32().unwrap()),
+                ))
             } else {
-                Expression::ShiftLeft(*loc, ty.clone(), Box::new(left), Box::new(right))
+                None
             }
         }
 
@@ -305,37 +312,28 @@ fn eval_constants_in_expression(
             let left = eval_constants_in_expression(left, ns, results);
             let right = eval_constants_in_expression(right, ns, results);
 
-            if let (Expression::NumberLiteral(_, _, left), Expression::NumberLiteral(_, _, right)) =
-                (&left, &right)
+            if let (
+                Some(Expression::NumberLiteral(_, _, left)),
+                Some(Expression::NumberLiteral(_, _, right)),
+            ) = (&left, &right)
             {
-                results.push(left.shr(right.to_u32().unwrap()));
-                Expression::NumberLiteral(*loc, ty.clone(), left.shr(right.to_u32().unwrap()))
+                results.pop();
+                results.pop();
+                results.push((ty.clone(), left.shr(right.to_u32().unwrap())));
+                Some(Expression::NumberLiteral(
+                    *loc,
+                    ty.clone(),
+                    left.shr(right.to_u32().unwrap()),
+                ))
             } else {
-                Expression::ShiftLeft(*loc, ty.clone(), Box::new(left), Box::new(right))
+                None
             }
         }
-        Expression::NumberLiteral(_, _, n) => {
-            results.push(n.clone());
-            expr.clone()
+        Expression::NumberLiteral(_, ty, val) => {
+            results.push((ty.clone(), val.clone()));
+            Some(expr.clone())
         }
-
-        Expression::Builtin(.., args) => {
-            for args_iter in args {
-                verify_result(args_iter, ns, &args_iter.loc());
-            }
-
-            expr.clone()
-        }
-
-        Expression::InternalFunctionCall { args, .. }
-        | Expression::ExternalFunctionCall { args, .. } => {
-            for args_iter in args.clone() {
-                verify_result(&args_iter, ns, &args_iter.loc());
-            }
-
-            expr.clone()
-        }
-        _ => expr.clone(),
+        _ => None,
     }
 }
 
@@ -378,9 +376,11 @@ fn overflow_check(ns: &mut Namespace, result: BigInt, ty: Type, loc: Loc) {
 }
 
 pub fn verify_result(expr: &Expression, ns: &mut Namespace, loc: &Loc) {
-    let results: &mut Vec<BigInt> = &mut Vec::new();
-    let _ = eval_constants_in_expression(expr, ns, results);
-    if results.last().is_some() {
-        overflow_check(ns, results.last().unwrap().clone(), expr.ty(), *loc);
+    let mut results = Vec::new();
+    expr.recurse(&mut results, |expr, results| {
+        eval_constants_in_expression(expr, ns, results).is_none()
+    });
+    for (ty, result) in results {
+        overflow_check(ns, result, ty, *loc);
     }
 }
