@@ -13,7 +13,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: llvm13.0-1
+        tag_name: llvm14.0-1
         release_name: LLVM Libraries v13.0 (v1)
         draft: false
         prerelease: false
@@ -30,11 +30,11 @@ jobs:
         -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
         -DLLVM_ENABLE_PROJECTS='clang;lld'
         -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
+        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm14.0 llvm
       working-directory: ./llvm-project/
     - run: cmake --build . --target install
       working-directory: ./llvm-project/
-    - run: tar Jcf ./llvm13.0-linux-x86-64.tar.xz ./llvm13.0/
+    - run: tar Jcf ./llvm14.0-linux-x86-64.tar.xz ./llvm14.0/
     - name: Upload Release Asset
       id: upload-release-asset
       uses: actions/upload-release-asset@v1
@@ -42,8 +42,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ needs.create.outputs.upload_url }}
-        asset_path: ./llvm13.0-linux-x86-64.tar.xz
-        asset_name: llvm13.0-linux-x86-64.tar.xz
+        asset_path: ./llvm14.0-linux-x86-64.tar.xz
+        asset_name: llvm14.0-linux-x86-64.tar.xz
         asset_content_type: application/x-xz
 
   linux-arm64:
@@ -57,11 +57,11 @@ jobs:
         -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
         -DLLVM_ENABLE_PROJECTS='clang;lld'
         -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
+        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm14.0 llvm
       working-directory: ./llvm-project/
     - run: cmake --build . --target install
       working-directory: ./llvm-project/
-    - run: tar Jcf ./llvm13.0-linux-arm64.tar.xz ./llvm13.0/
+    - run: tar Jcf ./llvm14.0-linux-arm64.tar.xz ./llvm14.0/
     - name: Upload Release Asset
       id: upload-release-asset
       uses: actions/upload-release-asset@v1
@@ -69,8 +69,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ needs.create.outputs.upload_url }}
-        asset_path: ./llvm13.0-linux-arm64.tar.xz
-        asset_name: llvm13.0-linux-arm64.tar.xz
+        asset_path: ./llvm14.0-linux-arm64.tar.xz
+        asset_name: llvm14.0-linux-arm64.tar.xz
         asset_content_type: application/x-xz
 
   mac-arm:
@@ -86,11 +86,11 @@ jobs:
         -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
         -DLLVM_ENABLE_PROJECTS='clang;lld'
         -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
+        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm14.0 llvm
       working-directory: ./llvm-project/
     - run: cmake --build . --target install
       working-directory: ./llvm-project/
-    - run: tar Jcf ./llvm13.0-mac-arm.tar.xz ./llvm13.0/
+    - run: tar Jcf ./llvm14.0-mac-arm.tar.xz ./llvm14.0/
     - name: Upload Release Asset
       id: upload-release-asset
       uses: actions/upload-release-asset@v1
@@ -98,8 +98,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ needs.create.outputs.upload_url }}
-        asset_path: ./llvm13.0-mac-arm.tar.xz
-        asset_name: llvm13.0-mac-arm.tar.xz
+        asset_path: ./llvm14.0-mac-arm.tar.xz
+        asset_name: llvm14.0-mac-arm.tar.xz
         asset_content_type: application/x-xz
 
   mac-intel:
@@ -114,11 +114,11 @@ jobs:
         -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
         -DLLVM_ENABLE_PROJECTS='clang;lld'
         -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
+        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm14.0 llvm
       working-directory: ./llvm-project/
     - run: cmake --build . --target install
       working-directory: ./llvm-project/
-    - run: tar Jcf ./llvm13.0-mac-intel.tar.xz ./llvm13.0/
+    - run: tar Jcf ./llvm14.0-mac-intel.tar.xz ./llvm14.0/
     - name: Upload Release Asset
       id: upload-release-asset
       uses: actions/upload-release-asset@v1
@@ -126,8 +126,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ needs.create.outputs.upload_url }}
-        asset_path: ./llvm13.0-mac-intel.tar.xz
-        asset_name: llvm13.0-mac-intel.tar.xz
+        asset_path: ./llvm14.0-mac-intel.tar.xz
+        asset_name: llvm14.0-mac-intel.tar.xz
         asset_content_type: application/x-xz
 
   windows:
@@ -148,11 +148,11 @@ jobs:
     - run: cmake -G Ninja -DLLVM_ENABLE_ASSERTIONS=On -DLLVM_ENABLE_TERMINFO=Off
         -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
         '-DLLVM_ENABLE_PROJECTS=clang;lld'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=C:/llvm13.0 llvm
+        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=C:/llvm14.0 llvm
       working-directory: C:\llvm-project
     - run: cmake --build . --target install
       working-directory: C:\llvm-project
-    - run: Compress-Archive -Path C:\llvm13.0 -DestinationPath C:\llvm13.0-win.zip
+    - run: Compress-Archive -Path C:\llvm14.0 -DestinationPath C:\llvm14.0-win.zip
     - name: Upload Release Asset
       id: upload-release-asset
       uses: actions/upload-release-asset@v1
@@ -160,6 +160,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ needs.create.outputs.upload_url }}
-        asset_path: C:\llvm13.0-win.zip
-        asset_name: llvm13.0-win.zip
+        asset_path: C:\llvm14.0-win.zip
+        asset_name: llvm14.0-win.zip
         asset_content_type: application/zip
