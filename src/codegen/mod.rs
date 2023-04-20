@@ -1711,9 +1711,12 @@ pub enum Builtin {
     BlockHash,
     BlockNumber,
     Calldata,
+    ChainId,
     Gasleft,
     GasLimit,
     Gasprice,
+    BaseFee,
+    PrevRandao,
     GetAddress,
     ExtCodeSize,
     MinimumBalance,
@@ -1801,6 +1804,9 @@ impl From<&ast::Builtin> for Builtin {
             ast::Builtin::WriteUint128LE => Builtin::WriteUint128LE,
             ast::Builtin::WriteUint256LE => Builtin::WriteUint256LE,
             ast::Builtin::WriteBytes | ast::Builtin::WriteString => Builtin::WriteBytes,
+            ast::Builtin::ChainId => Builtin::ChainId,
+            ast::Builtin::BaseFee => Builtin::BaseFee,
+            ast::Builtin::PrevRandao => Builtin::PrevRandao,
             _ => panic!("Builtin should not be in the cfg"),
         }
     }
