@@ -2,7 +2,7 @@ name: Build tests
 on:
   push:
     branches:
-      - main
+      - spdx-infinite
   pull_request:
   workflow_dispatch:
 
@@ -18,7 +18,7 @@ jobs:
 
   lints:
     name: Lints
-    runs-on: solang-ubuntu-latest
+    runs-on: ubuntu-latest
     container: ghcr.io/hyperledger/solang-llvm:ci-5
     steps:
       - name: Checkout sources

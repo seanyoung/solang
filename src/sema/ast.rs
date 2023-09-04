@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
 
 use super::symtable::Symtable;
 use crate::abi::anchor::discriminator;
