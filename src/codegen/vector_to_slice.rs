@@ -40,7 +40,7 @@ fn find_writable_vectors(
         match &block.instr[instr_no] {
             Instr::Set {
                 res,
-                expr: Expression::Variable(_, _, var_no),
+                expr: Expression::Variable { var_no, .. },
                 ..
             } => {
                 // is this aliasing a vector var
@@ -57,7 +57,7 @@ fn find_writable_vectors(
             // Call and return do not take slices
             Instr::Return { value: args } | Instr::Call { args, .. } => {
                 for arg in args {
-                    if let Expression::Variable(_, _, var_no) = arg {
+                    if let Expression::Variable { var_no, .. } = arg {
                         if let Some(entry) = vars.get_mut(var_no) {
                             writable.extend(entry.keys());
                         }
@@ -67,7 +67,7 @@ fn find_writable_vectors(
                 apply_transfers(&block.transfers[instr_no], vars, writable);
             }
             Instr::PushMemory { value, .. } => {
-                if let Expression::Variable(_, _, var_no) = value.as_ref() {
+                if let Expression::Variable { var_no, .. } = value.as_ref() {
                     if let Some(entry) = vars.get_mut(var_no) {
                         writable.extend(entry.keys());
                     }
@@ -76,7 +76,7 @@ fn find_writable_vectors(
                 apply_transfers(&block.transfers[instr_no], vars, writable);
             }
             Instr::Store { data, .. } => {
-                if let Expression::Variable(_, _, var_no) = data {
+                if let Expression::Variable { var_no, .. } = data {
                     if let Some(entry) = vars.get_mut(var_no) {
                         writable.extend(entry.keys());
                     }
@@ -88,7 +88,7 @@ fn find_writable_vectors(
                 destination: buf, ..
             }
             | Instr::WriteBuffer { buf, .. } => {
-                if let Expression::Variable(_, _, var_no) = buf {
+                if let Expression::Variable { var_no, .. } = buf {
                     if let Some(entry) = vars.get_mut(var_no) {
                         writable.extend(entry.keys());
                     }
@@ -99,8 +99,10 @@ fn find_writable_vectors(
             // These instructions are fine with vectors
             Instr::Set { .. }
             | Instr::Nop
+            | Instr::ReturnCode { .. }
             | Instr::Branch { .. }
             | Instr::BranchCond { .. }
+            | Instr::Switch { .. }
             | Instr::PopMemory { .. }
             | Instr::LoadStorage { .. }
             | Instr::SetStorage { .. }
@@ -110,13 +112,14 @@ fn find_writable_vectors(
             | Instr::PopStorage { .. }
             | Instr::SelfDestruct { .. }
             | Instr::EmitEvent { .. }
-            | Instr::AbiDecode { .. }
             | Instr::ExternalCall { .. }
             | Instr::Constructor { .. }
-            | Instr::Unreachable
             | Instr::Print { .. }
             | Instr::AssertFailure { .. }
-            | Instr::ValueTransfer { .. } => {
+            | Instr::ReturnData { .. }
+            | Instr::ValueTransfer { .. }
+            | Instr::AccountAccess { .. }
+            | Instr::Unimplemented { .. } => {
                 apply_transfers(&block.transfers[instr_no], vars, writable);
             }
         }
@@ -131,7 +134,7 @@ fn apply_transfers(
     for transfer in transfers {
         match transfer {
             Transfer::Kill { var_no } => {
-                vars.remove(var_no);
+                vars.swap_remove(var_no);
             }
             Transfer::Mod { var_no } => {
                 if let Some(entry) = vars.get_mut(var_no) {
@@ -172,7 +175,7 @@ fn update_vectors_to_slice(
     for block_no in 0..cfg.blocks.len() {
         for instr_no in 0..cfg.blocks[block_no].instr.len() {
             if let Instr::Set {
-                expr: Expression::AllocDynamicArray(..),
+                expr: Expression::AllocDynamicBytes { .. },
                 ..
             } = &cfg.blocks[block_no].instr[instr_no]
             {
@@ -212,19 +215,24 @@ fn update_vectors_to_slice(
         if let Instr::Set {
             loc,
             res,
-            expr: Expression::AllocDynamicArray(_, _, len, Some(bs)),
+            expr:
+                Expression::AllocDynamicBytes {
+                    size: len,
+                    initializer: Some(bs),
+                    ..
+                },
         } = &cfg.blocks[def.block_no].instr[def.instr_no]
         {
             let res = *res;
             cfg.blocks[def.block_no].instr[def.instr_no] = Instr::Set {
                 loc: *loc,
                 res,
-                expr: Expression::AllocDynamicArray(
-                    *loc,
-                    Type::Slice(Box::new(Type::Bytes(1))),
-                    len.clone(),
-                    Some(bs.clone()),
-                ),
+                expr: Expression::AllocDynamicBytes {
+                    loc: *loc,
+                    ty: Type::Slice(Box::new(Type::Bytes(1))),
+                    size: len.clone(),
+                    initializer: Some(bs.clone()),
+                },
             };
 
             if let ASTFunction::SolidityFunction(function_no) = cfg.function_no {

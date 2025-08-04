@@ -42,11 +42,11 @@ pub fn find_undefined_variables(
         }
     }
 
-    let mut all_diagnostics: Vec<Diagnostic> =
-        diagnostics.into_iter().map(|(_, diag)| diag).collect();
+    let mut all_diagnostics: Vec<Diagnostic> = diagnostics.into_values().collect();
+    let has_diagnostic = !all_diagnostics.is_empty();
     ns.diagnostics.append(&mut all_diagnostics);
 
-    !all_diagnostics.is_empty()
+    has_diagnostic
 }
 
 /// Checks for undefined variables in an expression associated to an instruction
@@ -78,19 +78,19 @@ pub fn find_undefined_variables_in_expression(
     ctx: &mut FindUndefinedVariablesParams,
 ) -> bool {
     match &exp {
-        Expression::Variable(_, _, pos) => {
+        Expression::Variable { var_no, .. } => {
             let variable = match ctx.func_no {
                 ASTFunction::YulFunction(func_no) => {
-                    ctx.ns.yul_functions[func_no].symtable.vars.get(pos)
+                    ctx.ns.yul_functions[func_no].symtable.vars.get(var_no)
                 }
                 ASTFunction::SolidityFunction(func_no) => {
-                    ctx.ns.functions[func_no].symtable.vars.get(pos)
+                    ctx.ns.functions[func_no].symtable.vars.get(var_no)
                 }
 
                 ASTFunction::None => None,
             };
 
-            if let (Some(def_map), Some(var)) = (ctx.defs.get(pos), variable) {
+            if let (Some(def_map), Some(var)) = (ctx.defs.get(var_no), variable) {
                 for (def, modified) in def_map {
                     if let Instr::Set {
                         expr: instr_expr, ..
@@ -98,11 +98,11 @@ pub fn find_undefined_variables_in_expression(
                     {
                         // If an undefined definition reaches this read and the variable
                         // has not been modified since its definition, it is undefined
-                        if matches!(instr_expr, Expression::Undefined(_))
+                        if matches!(instr_expr, Expression::Undefined { .. })
                             && !*modified
                             && !matches!(var.ty, Type::Array(..))
                         {
-                            add_diagnostic(var, pos, &exp.loc(), ctx.diagnostics);
+                            add_diagnostic(var, *var_no, &exp.loc(), ctx.diagnostics);
                         }
                     }
                 }
@@ -111,7 +111,10 @@ pub fn find_undefined_variables_in_expression(
         }
 
         // This is a method call whose array will never be undefined
-        Expression::Builtin(_, _, Builtin::ArrayLength, _) => false,
+        Expression::Builtin {
+            kind: Builtin::ArrayLength,
+            ..
+        } => false,
 
         _ => true,
     }
@@ -121,7 +124,7 @@ pub fn find_undefined_variables_in_expression(
 /// error messages in Diagnotics
 fn add_diagnostic(
     var: &symtable::Variable,
-    var_no: &usize,
+    var_no: usize,
     expr_loc: &Loc,
     diagnostics: &mut HashMap<usize, Diagnostic>,
 ) {
@@ -131,20 +134,15 @@ fn add_diagnostic(
         return;
     }
 
-    if !diagnostics.contains_key(var_no) {
-        diagnostics.insert(
-            *var_no,
-            Diagnostic {
-                level: Level::Error,
-                ty: ErrorType::TypeError,
-                loc: var.id.loc,
-                message: format!("Variable '{}' is undefined", var.id.name),
-                notes: vec![],
-            },
-        );
-    }
+    diagnostics.entry(var_no).or_insert(Diagnostic {
+        level: Level::Error,
+        ty: ErrorType::TypeError,
+        loc: var.id.loc,
+        message: format!("Variable '{}' is undefined", var.id.name),
+        notes: vec![],
+    });
 
-    let diag = diagnostics.get_mut(var_no).unwrap();
+    let diag = diagnostics.get_mut(&var_no).unwrap();
     diag.notes.push(Note {
         loc: *expr_loc,
         message: "Variable read before being defined".to_string(),

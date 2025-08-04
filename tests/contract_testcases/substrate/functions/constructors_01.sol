@@ -1,4 +1,0 @@
-
-        contract test {
-            constructor() virtual {}
-        }

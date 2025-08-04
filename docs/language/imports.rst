@@ -2,7 +2,7 @@ Imports
 =======
 
 The ``import`` directive is used to import items from other Solidity files. This can be useful to
-keep a single definition in one file, which can be used in other files. For example
+keep a single definition in one file, which can be used in multiple other files. For example,
 you could have an interface in one source file, which several contracts implement or use
 which are in other files. Solidity imports are somewhat similar to JavaScript ES6, however
 there is no export statement, or default export.
@@ -15,18 +15,20 @@ another file.
 - enums definitions
 - event definitions
 - global functions
+- free standing functions
 - contracts, including abstract contract, libraries, and interfaces
 
 There are a few different flavours of import. You can specify if you want everything imported,
-or a just a select few. You can also rename the imports. The following directive imports only
+or just a select few items. You can also rename the imports. The following directive imports only
 `foo` and `bar`:
 
 .. code-block:: solidity
 
     import {foo, bar} from "defines.sol";
 
-Solang will look for the file `defines.sol` in the same directory as the current file. You can specify
-more directories to search with the ``--importpath`` commandline option.
+Solang will look for the file `defines.sol` in the paths specified with the ``--importpath``
+commandline option. If the file is relative, e.g. ``import "./defines.sol";`` or
+``import "../defines.sol";``, then the directory relative to the parent file is used.
 Just like with ES6, ``import`` is hoisted to the top and both `foo` and `bar` are usuable
 even before the ``import`` statement. It is also possible to import everything from
 `defines.sol` by leaving the list out. Note that this is different than ES6, which would import nothing
@@ -42,7 +44,7 @@ the command line option ``--importmap @openzeppelin=/opt/openzeppelin-contracts/
 
 .. code-block:: solidity
 
-    import "openzeppelin/interfaces/IERC20.sol";
+    import "@openzeppelin/interfaces/IERC20.sol";
 
 will automatically map to `/opt/openzeppelin-contracts/contracts/interfaces/IERC20.sol`.
 
@@ -67,8 +69,19 @@ there can be no naming conflict.
 
     import "defines.sol" as defs;
 
-This also has a slightly more baroque syntax, which does exactly the same.
+There is another syntax, which does exactly the same.
 
 .. code-block:: solidity
 
     import * as defs from "defines.sol";
+
+Just like string literals, import paths can have escape sequences. This is a confusing way of
+writing `a.sol`:
+
+.. code-block:: solidity
+
+    import "\x61.sol";
+
+It is possible to use ``\`` Windows style path separators on Windows, but it is not recommended
+as they do not work on platforms other than Windows (they do not work on WSL either).
+Note they have to be written as ``\\`` due to escape sequences.

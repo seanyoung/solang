@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-extern crate core;
-
 pub mod abi;
 pub mod codegen;
 #[cfg(feature = "llvm")]
@@ -14,7 +12,7 @@ pub mod standard_json;
 // In Sema, we use result unit for returning early
 // when code-misparses. The error will be added to the namespace diagnostics, no need to have anything but unit
 // as error.
-#[allow(clippy::result_unit_err)]
+pub mod lir;
 pub mod sema;
 
 use file_resolver::FileResolver;
@@ -23,25 +21,27 @@ use solang_parser::pt;
 use std::{ffi::OsStr, fmt};
 
 /// The target chain you want to compile Solidity for.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Target {
     /// Solana, see <https://solana.com/>
     Solana,
-    /// Parity Substrate, see <https://substrate.io/>
-    Substrate {
+    /// Parachains with the Substrate `contracts` pallet, see <https://substrate.io/>
+    Polkadot {
         address_length: usize,
         value_length: usize,
     },
-    /// Ethereum ewasm, see <https://github.com/ewasm/design>
-    Ewasm,
+    /// Ethereum EVM, see <https://ethereum.org/en/developers/docs/evm/>
+    EVM,
+    Soroban,
 }
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Target::Solana => write!(f, "solana"),
-            Target::Substrate { .. } => write!(f, "substrate"),
-            Target::Ewasm => write!(f, "ewasm"),
+            Target::Solana => write!(f, "Solana"),
+            Target::Polkadot { .. } => write!(f, "Polkadot"),
+            Target::EVM => write!(f, "EVM"),
+            Target::Soroban => write!(f, "Soroban"),
         }
     }
 }
@@ -52,21 +52,22 @@ impl PartialEq for Target {
     fn eq(&self, other: &Self) -> bool {
         match self {
             Target::Solana => matches!(other, Target::Solana),
-            Target::Substrate { .. } => matches!(other, Target::Substrate { .. }),
-            Target::Ewasm => matches!(other, Target::Ewasm),
+            Target::Polkadot { .. } => matches!(other, Target::Polkadot { .. }),
+            Target::EVM => matches!(other, Target::EVM),
+            Target::Soroban => matches!(other, Target::Soroban),
         }
     }
 }
 
 impl Target {
-    /// Short-hand for checking for Substrate target
-    pub fn is_substrate(&self) -> bool {
-        matches!(self, Target::Substrate { .. })
+    /// Short-hand for checking for Polkadot target
+    pub fn is_polkadot(&self) -> bool {
+        matches!(self, Target::Polkadot { .. })
     }
 
-    /// Create the target Substrate with default parameters
-    pub const fn default_substrate() -> Self {
-        Target::Substrate {
+    /// Create the target Polkadot with default parameters
+    pub const fn default_polkadot() -> Self {
+        Target::Polkadot {
             address_length: 32,
             value_length: 16,
         }
@@ -76,8 +77,8 @@ impl Target {
     pub fn from(name: &str) -> Option<Self> {
         match name {
             "solana" => Some(Target::Solana),
-            "substrate" => Some(Target::default_substrate()),
-            "ewasm" => Some(Target::Ewasm),
+            "polkadot" => Some(Target::default_polkadot()),
+            "evm" => Some(Target::EVM),
             _ => None,
         }
     }
@@ -94,18 +95,24 @@ impl Target {
 
     /// Size of a pointer in bits
     pub fn ptr_size(&self) -> u16 {
-        if *self == Target::Solana {
+        match *self {
             // Solana is BPF, which is 64 bit
-            64
-        } else {
+            Target::Solana => 64,
             // All others are WebAssembly in 32 bit mode
-            32
+            _ => 32,
+        }
+    }
+
+    /// This function returns the byte length for a selector, given the target
+    pub fn selector_length(&self) -> u8 {
+        match self {
+            Target::Solana => 8,
+            _ => 4,
         }
     }
 }
 
-/// Compile a solidity file to list of wasm files and their ABIs. The filename is only used for error messages;
-/// the contents of the file is provided in the `src` argument.
+/// Compile a solidity file to list of wasm files and their ABIs.
 ///
 /// This function only produces a single contract and abi, which is compiled for the `target` specified. Any
 /// compiler warnings, errors and informational messages are also provided.
@@ -115,9 +122,10 @@ impl Target {
 pub fn compile(
     filename: &OsStr,
     resolver: &mut FileResolver,
-    opt_level: inkwell::OptimizationLevel,
     target: Target,
-    math_overflow_check: bool,
+    opts: &codegen::Options,
+    authors: Vec<String>,
+    version: &str,
 ) -> (Vec<(Vec<u8>, String)>, sema::ast::Namespace) {
     let mut ns = parse_and_resolve(filename, resolver, target);
 
@@ -126,49 +134,28 @@ pub fn compile(
     }
 
     // codegen all the contracts
-    codegen::codegen(
-        &mut ns,
-        &codegen::Options {
-            math_overflow_check,
-            opt_level: opt_level.into(),
-            ..Default::default()
-        },
-    );
+    codegen::codegen(&mut ns, opts);
 
-    let results = (0..ns.contracts.len())
-        .filter(|c| ns.contracts[*c].is_concrete())
-        .map(|c| {
-            // codegen has already happened
-            assert!(!ns.contracts[c].code.is_empty());
+    if ns.diagnostics.any_errors() {
+        return (Vec::new(), ns);
+    }
 
-            let code = &ns.contracts[c].code;
-            let (abistr, _) = abi::generate_abi(c, &ns, code, false);
+    // emit the contracts
+    let mut results = Vec::new();
 
-            (code.clone(), abistr)
-        })
-        .collect();
+    for contract_no in 0..ns.contracts.len() {
+        let contract = &ns.contracts[contract_no];
+
+        if contract.instantiable {
+            let code = contract.emit(&ns, opts, contract_no);
+
+            let (abistr, _) = abi::generate_abi(contract_no, &ns, &code, false, &authors, version);
+
+            results.push((code, abistr));
+        };
+    }
 
     (results, ns)
-}
-
-/// Build a single binary out of multiple contracts. This is only possible on Solana
-#[cfg(feature = "llvm")]
-pub fn compile_many<'a>(
-    context: &'a inkwell::context::Context,
-    namespaces: &'a [&sema::ast::Namespace],
-    filename: &str,
-    opt: inkwell::OptimizationLevel,
-    math_overflow_check: bool,
-    generate_debug_info: bool,
-) -> emit::binary::Binary<'a> {
-    emit::binary::Binary::build_bundle(
-        context,
-        namespaces,
-        filename,
-        opt,
-        math_overflow_check,
-        generate_debug_info,
-    )
 }
 
 /// Parse and resolve the Solidity source code provided in src, for the target chain as specified in target.

@@ -1,22 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
 
 #include <stdint.h>
 #include <stdbool.h>
 
 /*
-	In wasm/bpf, the instruction for multiplying two 64 bit values results in a 64 bit value. In
+    In wasm/bpf, the instruction for multiplying two 64 bit values results in a 64 bit value. In
     other words, the result is truncated. The largest values we can multiply without truncation
-	is 32 bit (by casting to 64 bit and doing a 64 bit multiplication). So, we divvy the work
-	up into a 32 bit multiplications.
+    is 32 bit (by casting to 64 bit and doing a 64 bit multiplication). So, we divvy the work
+    up into a 32 bit multiplications.
 
-	No overflow checking is done.
+    No overflow checking is done.
 
-	0		0		0		r5		r4		r3		r2		r1
-	0		0		0		0		l4		l3		l2		l1 *
+    0		0		0		r5		r4		r3		r2		r1
+    0		0		0		0		l4		l3		l2		l1 *
     ------------------------------------------------------------
-	0		0		0		r5*l1	r4*l1	r3*l1	r2*l1	r1*l1
-	0		0		r5*l2	r4*l2	r3*l2	r2*l2 	r1*l2	0
-	0		r5*l3	r4*l3	r3*l3	r2*l3 	r1*l3	0		0
-	r5*l4	r4*l4	r3*l4	r2*l4 	r1*l4	0		0 		0  +
+    0		0		0		r5*l1	r4*l1	r3*l1	r2*l1	r1*l1
+    0		0		r5*l2	r4*l2	r3*l2	r2*l2 	r1*l2	0
+    0		r5*l3	r4*l3	r3*l3	r2*l3 	r1*l3	0		0
+    r5*l4	r4*l4	r3*l4	r2*l4 	r1*l4	0		0 		0  +
     ------------------------------------------------------------
 */
 void __mul32(uint32_t left[], uint32_t right[], uint32_t out[], int len)
@@ -62,11 +63,64 @@ void __mul32(uint32_t left[], uint32_t right[], uint32_t out[], int len)
     }
 }
 
+// A version of __mul32 that detects overflow.
+bool __mul32_with_builtin_ovf(uint32_t left[], uint32_t right[], uint32_t out[], int len)
+{
+    bool overflow = false;
+    uint64_t val1 = 0, carry = 0;
+    int left_len = len, right_len = len;
+    while (left_len > 0 && !left[left_len - 1])
+        left_len--;
+    while (right_len > 0 && !right[right_len - 1])
+        right_len--;
+    int right_start = 0, right_end = 0;
+    int left_start = 0;
+    // We extend len to check for possible overflow. len = bit_width / 32. Checking for overflow for intN (where N = number of bits) requires checking for any set bits beyond N up to N*2.
+    len = len * 2;
+    for (int l = 0; l < len; l++)
+    {
+        int i = 0;
+        if (l >= left_len)
+            right_start++;
+        if (l >= right_len)
+            left_start++;
+        if (right_end < right_len)
+            right_end++;
+
+        for (int r = right_end - 1; r >= right_start; r--)
+        {
+            uint64_t m = (uint64_t)left[left_start + i] * (uint64_t)right[r];
+            i++;
+            if (__builtin_add_overflow(val1, m, &val1))
+                carry += 0x100000000;
+        }
+
+        // If the loop is within the operand bit size, just do the assignment
+        if (l < len / 2)
+        {
+            out[l] = val1;
+        }
+
+        // If the loop extends to more than the bit size, we check for overflow.
+        else if (l >= len / 2)
+        {
+            if (val1 > 0)
+            {
+                overflow = true;
+                break;
+            }
+        }
+
+        val1 = (val1 >> 32) | carry;
+        carry = 0;
+    }
+    return overflow;
+}
+
 // Some compiler runtime builtins we need.
 
 // 128 bit shift left.
-typedef union
-{
+typedef union {
     __uint128_t all;
     struct
     {
@@ -76,8 +130,7 @@ typedef union
 } two64;
 
 // 128 bit shift left.
-typedef union
-{
+typedef union {
     __int128_t all;
     struct
     {
@@ -375,7 +428,7 @@ int sdivmod128(__uint128_t *pdividend, __uint128_t *pdivisor, __uint128_t *remai
     return 0;
 }
 
-typedef unsigned _ExtInt(256) uint256_t;
+typedef unsigned _BitInt(256) uint256_t;
 uint256_t const uint256_0 = (uint256_t)0;
 uint256_t const uint256_1 = (uint256_t)1;
 
@@ -489,7 +542,7 @@ int sdivmod256(uint256_t *pdividend, uint256_t *pdivisor, uint256_t *remainder, 
     return 0;
 }
 
-typedef unsigned _ExtInt(512) uint512_t;
+typedef unsigned _BitInt(512) uint512_t;
 uint512_t const uint512_0 = (uint512_t)0;
 uint512_t const uint512_1 = (uint512_t)1;
 

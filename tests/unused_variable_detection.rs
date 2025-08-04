@@ -6,18 +6,18 @@ use solang::{parse_and_resolve, Target};
 use std::ffi::OsStr;
 
 fn parse(src: &'static str) -> ast::Namespace {
-    let mut cache = FileResolver::new();
+    let mut cache = FileResolver::default();
     cache.set_file_contents("test.sol", src.to_string());
 
-    parse_and_resolve(OsStr::new("test.sol"), &mut cache, Target::Ewasm)
+    parse_and_resolve(OsStr::new("test.sol"), &mut cache, Target::EVM)
 }
 
 fn parse_two_files(src1: &'static str, src2: &'static str) -> ast::Namespace {
-    let mut cache = FileResolver::new();
+    let mut cache = FileResolver::default();
     cache.set_file_contents("test.sol", src1.to_string());
     cache.set_file_contents("test2.sol", src2.to_string());
 
-    parse_and_resolve(OsStr::new("test.sol"), &mut cache, Target::Ewasm)
+    parse_and_resolve(OsStr::new("test.sol"), &mut cache, Target::EVM)
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn emit_event() {
     let case_2 = r#"
     event Hey(uint8 n);
     contract usedEvent {
-        event Hey(uint8 n);
+        event Hey(bool);
         event Hello(uint8 n);
         function emitEvent(uint8 n) public {
             emit Hey(n);
@@ -48,16 +48,15 @@ fn emit_event() {
     "#;
 
     let ns = parse(case_2);
-    assert_eq!(ns.diagnostics.count_warnings(), 1);
-    assert_eq!(
-        ns.diagnostics.first_warning().message,
-        "event 'Hello' has never been emitted"
-    );
+    let warnings = ns.diagnostics.warnings();
+    assert_eq!(warnings.len(), 2);
+    assert_eq!(warnings[0].message, "event 'Hey' has never been emitted");
+    assert_eq!(warnings[1].message, "event 'Hello' has never been emitted");
 
     // Unused event
     let case_2 = r#"
     contract F {
-        event Hey(uint8 n);
+        event Hey(bool);
         event Hello(uint8 n);
     }
     contract usedEvent is F {
@@ -69,11 +68,10 @@ fn emit_event() {
     "#;
 
     let ns = parse(case_2);
-    assert_eq!(ns.diagnostics.count_warnings(), 1);
-    assert_eq!(
-        ns.diagnostics.first_warning().message,
-        "event 'Hello' has never been emitted"
-    );
+    let warnings = ns.diagnostics.warnings();
+    assert_eq!(warnings.len(), 2);
+    assert_eq!(warnings[0].message, "event 'Hey' has never been emitted");
+    assert_eq!(warnings[1].message, "event 'Hello' has never been emitted");
 
     // Unused event
     let case_2 = r#"
@@ -248,10 +246,10 @@ fn state_variable() {
         .warning_contains("local variable 'b' has been assigned, but never read"));
     assert!(ns
         .diagnostics
-        .warning_contains("local variable 'a' has been assigned, but never read"));
+        .warning_contains("local variable 'a' is unused"));
     assert!(ns
         .diagnostics
-        .warning_contains("local variable 'c' has never been read nor assigned"));
+        .warning_contains("local variable 'c' is unused"));
 }
 
 #[test]
@@ -295,7 +293,7 @@ fn struct_usage() {
         .warning_contains("storage variable 't1' has been assigned, but never read"));
     assert!(ns
         .diagnostics
-        .warning_contains("local variable 't5' has never been read nor assigned"));
+        .warning_contains("local variable 't5' is unused"));
     assert!(ns
         .diagnostics
         .warning_contains("storage variable 't6' has never been used"));
@@ -543,10 +541,10 @@ fn statements() {
     assert_eq!(ns.diagnostics.count_warnings(), 2);
     assert!(ns
         .diagnostics
-        .warning_contains("function parameter 'a' has never been read"));
+        .warning_contains("function parameter 'a' is unused"));
     assert!(ns
         .diagnostics
-        .warning_contains("local variable 'ct' has been assigned, but never read",));
+        .warning_contains("local variable 'ct' is unused"));
 }
 
 #[test]
@@ -669,7 +667,48 @@ fn array_push_pop() {
     "#;
 
     let ns = parse(file);
+    assert_eq!(ns.diagnostics.count_warnings(), 2);
+    assert!(ns
+        .diagnostics
+        .warning_contains("storage variable 'vec1' has been assigned, but never read"));
+    assert!(ns
+        .diagnostics
+        .warning_contains("local variable 'vec2' has been assigned, but never read"));
+
+    let file = r#"
+      contract Test1 {
+        function test_storage(uint64[] storage arr1, uint128[] storage arr2) private {
+            arr1.push(32);
+            arr2.pop();
+        }
+
+        function arg_ptr(uint64[] memory arr1, uint16[] memory arr2) private pure {
+            arr1.push(422);
+            arr2.pop();
+        }
+    }
+    "#;
+    let ns = parse(file);
     assert_eq!(ns.diagnostics.count_warnings(), 0);
+
+    let file = r#"
+      contract Test1 {
+        function test_storage(uint64[] storage arr1) private pure {
+
+        }
+
+        function arg_ptr(uint64[] memory arr2) private pure {
+        }
+    }
+    "#;
+    let ns = parse(file);
+    assert_eq!(ns.diagnostics.count_warnings(), 2);
+    assert!(ns
+        .diagnostics
+        .warning_contains("function parameter 'arr1' is unused"));
+    assert!(ns
+        .diagnostics
+        .warning_contains("function parameter 'arr2' is unused"));
 }
 
 #[test]

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::ast::{Diagnostic, Expression, FormatArg, Namespace, RetrieveType, Type};
-use super::expression::{expression, ExprContext, ResolveTo};
+use super::expression::{ExprContext, ResolveTo};
 use super::symtable::Symtable;
 use crate::sema::diagnostics::Diagnostics;
 use solang_parser::pt;
 use solang_parser::pt::CodeLocation;
 
+use crate::sema::expression::resolve_expression::expression;
 use std::iter::Peekable;
 use std::slice::Iter;
 use std::str::CharIndices;
@@ -19,7 +20,7 @@ pub fn string_format(
     loc: &pt::Loc,
     literals: &[pt::StringLiteral],
     args: &[pt::Expression],
-    context: &ExprContext,
+    context: &mut ExprContext,
     ns: &mut Namespace,
     symtable: &mut Symtable,
     diagnostics: &mut Diagnostics,
@@ -62,7 +63,11 @@ pub fn string_format(
                 if !string_literal.is_empty() {
                     format_args.push((
                         FormatArg::StringLiteral,
-                        Expression::BytesLiteral(loc, Type::String, string_literal.into_bytes()),
+                        Expression::BytesLiteral {
+                            loc,
+                            ty: Type::String,
+                            value: string_literal.into_bytes(),
+                        },
                     ));
                     string_literal = String::new();
                 }
@@ -82,7 +87,7 @@ pub fn string_format(
                 let arg_ty = arg_ty.deref_any();
 
                 if matches!(specifier, FormatArg::Binary | FormatArg::Hex) {
-                    if !matches!(arg_ty, Type::Uint(_) | Type::Int(_)) {
+                    if !matches!(arg_ty, Type::Uint(_) | Type::Int(_) | Type::Address(_)) {
                         diagnostics.push(Diagnostic::error(
                             arg.loc(),
                             String::from("argument must be signed or unsigned integer type"),
@@ -128,11 +133,18 @@ pub fn string_format(
     if !string_literal.is_empty() {
         format_args.push((
             FormatArg::StringLiteral,
-            Expression::BytesLiteral(*loc, Type::String, string_literal.into_bytes()),
+            Expression::BytesLiteral {
+                loc: *loc,
+                ty: Type::String,
+                value: string_literal.into_bytes(),
+            },
         ));
     }
 
-    Ok(Expression::FormatString(*loc, format_args))
+    Ok(Expression::FormatString {
+        loc: *loc,
+        format: format_args,
+    })
 }
 
 fn parse_format_specifier(
@@ -162,7 +174,7 @@ fn parse_format_specifier(
                 Some((loc, ch)) => {
                     diagnostics.push(Diagnostic::error(
                         loc,
-                        format!("unexpected format char '{}'", ch),
+                        format!("unexpected format char '{ch}'"),
                     ));
                     return Err(());
                 }
@@ -180,7 +192,7 @@ fn parse_format_specifier(
                 Some((loc, ch)) => {
                     diagnostics.push(Diagnostic::error(
                         loc,
-                        format!("unexpected format char '{:}', expected closing '}}'", ch),
+                        format!("unexpected format char '{ch}', expected closing '}}'"),
                     ));
                     Err(())
                 }
@@ -196,7 +208,7 @@ fn parse_format_specifier(
         Some((loc, ch)) => {
             diagnostics.push(Diagnostic::error(
                 loc,
-                format!("unexpected format char '{}'", ch),
+                format!("unexpected format char '{ch}'"),
             ));
             Err(())
         }
@@ -236,7 +248,7 @@ impl<'a> FormatIterator<'a> {
     }
 }
 
-impl<'a> Iterator for FormatIterator<'a> {
+impl Iterator for FormatIterator<'_> {
     type Item = (pt::Loc, char);
 
     fn next(&mut self) -> Option<Self::Item> {

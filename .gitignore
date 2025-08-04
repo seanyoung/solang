@@ -1,5 +1,14 @@
 /docs/build
+/docs/.venv
 Cargo.lock
 /target
 **/*.rs.bk
-bundle.ll
+*.ll
+/tests/.tmp*
+/tests/create_me/
+/test_snapshots/
+
+.helix/
+.vscode/
+
+/test_snapshots

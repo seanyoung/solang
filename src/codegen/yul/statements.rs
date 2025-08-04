@@ -8,7 +8,7 @@ use crate::codegen::yul::expression::{expression, process_function_call};
 use crate::codegen::{Expression, Options};
 use crate::sema::ast::{Namespace, RetrieveType, Type};
 use crate::sema::yul::ast;
-use crate::sema::yul::ast::{YulStatement, YulSuffix};
+use crate::sema::yul::ast::{CaseBlock, YulBlock, YulExpression, YulStatement, YulSuffix};
 use num_bigint::BigInt;
 use num_traits::FromPrimitive;
 use solang_parser::pt;
@@ -37,12 +37,12 @@ pub(crate) fn statement(
         }
 
         YulStatement::BuiltInCall(loc, _, builtin_ty, args) => {
-            let expr = process_builtin(loc, builtin_ty, args, contract_no, ns, vartab, cfg, opt);
+            let expr = process_builtin(loc, *builtin_ty, args, contract_no, ns, vartab, cfg, opt);
             assert_eq!(expr, Expression::Poison);
         }
 
         YulStatement::Block(block) => {
-            for item in &block.body {
+            for item in &block.statements {
                 statement(item, contract_no, loops, ns, cfg, vartab, early_return, opt);
             }
         }
@@ -67,10 +67,23 @@ pub(crate) fn statement(
             opt,
         ),
 
-        YulStatement::Switch { .. } => {
-            // Switch statements should use LLVM switch instruction, which requires changes in emit.
-            unreachable!("Switch statements for yul are not implemented yet");
-        }
+        YulStatement::Switch {
+            condition,
+            cases,
+            default,
+            ..
+        } => switch(
+            condition,
+            cases,
+            default,
+            loops,
+            contract_no,
+            ns,
+            vartab,
+            cfg,
+            early_return,
+            opt,
+        ),
 
         YulStatement::For {
             loc,
@@ -142,7 +155,7 @@ fn process_variable_declaration(
     } else {
         let mut inits: Vec<Expression> = Vec::with_capacity(vars.len());
         for item in vars {
-            inits.push(Expression::Undefined(item.1.clone()));
+            inits.push(Expression::Undefined { ty: item.1.clone() });
         }
 
         inits
@@ -263,19 +276,27 @@ fn cfg_single_assigment(
                     var_no,
                 ) => {
                     let (member_no, casted_expr, member_ty) = match suffix {
-                        YulSuffix::Selector => (0, rhs.cast(&Type::Uint(32), ns), Type::Uint(32)),
+                        YulSuffix::Selector => (
+                            0,
+                            rhs.cast(&Type::Bytes(ns.target.selector_length()), ns),
+                            Type::Bytes(ns.target.selector_length()),
+                        ),
                         YulSuffix::Address => {
                             (1, rhs.cast(&Type::Address(false), ns), Type::Address(false))
                         }
                         _ => unreachable!(),
                     };
 
-                    let ptr = Expression::StructMember(
-                        *loc,
-                        Type::Ref(Box::new(member_ty)),
-                        Box::new(Expression::Variable(*loc, ty.clone(), *var_no)),
-                        member_no,
-                    );
+                    let ptr = Expression::StructMember {
+                        loc: *loc,
+                        ty: Type::Ref(Box::new(member_ty)),
+                        expr: Box::new(Expression::Variable {
+                            loc: *loc,
+                            ty: ty.clone(),
+                            var_no: *var_no,
+                        }),
+                        member: member_no,
+                    };
 
                     cfg.add(
                         vartab,
@@ -310,7 +331,7 @@ fn cfg_single_assigment(
             }
         }
 
-        ast::YulExpression::BoolLiteral(..)
+        ast::YulExpression::BoolLiteral { .. }
         | ast::YulExpression::NumberLiteral(..)
         | ast::YulExpression::StringLiteral(..)
         | ast::YulExpression::SolidityLocalVariable(..)
@@ -340,15 +361,15 @@ fn process_if_block(
     let bool_cond = if cond.ty() == Type::Bool {
         cond
     } else {
-        Expression::NotEqual(
-            block.loc,
-            Box::new(Expression::NumberLiteral(
-                pt::Loc::Codegen,
-                cond.ty(),
-                BigInt::from_u8(0).unwrap(),
-            )),
-            Box::new(cond),
-        )
+        Expression::NotEqual {
+            loc: block.loc,
+            left: Box::new(Expression::NumberLiteral {
+                loc: pt::Loc::Codegen,
+                ty: cond.ty(),
+                value: BigInt::from_u8(0).unwrap(),
+            }),
+            right: Box::new(cond),
+        }
     };
 
     let then = cfg.new_basic_block("then".to_string());
@@ -366,7 +387,7 @@ fn process_if_block(
     cfg.set_basic_block(then);
     vartab.new_dirty_tracker();
 
-    for stmt in &block.body {
+    for stmt in &block.statements {
         statement(stmt, contract_no, loops, ns, cfg, vartab, early_return, opt);
     }
 
@@ -394,7 +415,7 @@ fn process_for_block(
     early_return: &Option<Instr>,
     opt: &Options,
 ) {
-    for stmt in &init_block.body {
+    for stmt in &init_block.statements {
         statement(stmt, contract_no, loops, ns, cfg, vartab, early_return, opt);
     }
 
@@ -415,15 +436,15 @@ fn process_for_block(
     let cond_expr = if cond_expr.ty() == Type::Bool {
         cond_expr
     } else {
-        Expression::NotEqual(
-            *loc,
-            Box::new(Expression::NumberLiteral(
-                pt::Loc::Codegen,
-                cond_expr.ty(),
-                BigInt::from_u8(0).unwrap(),
-            )),
-            Box::new(cond_expr),
-        )
+        Expression::NotEqual {
+            loc: *loc,
+            left: Box::new(Expression::NumberLiteral {
+                loc: pt::Loc::Codegen,
+                ty: cond_expr.ty(),
+                value: BigInt::from_u8(0).unwrap(),
+            }),
+            right: Box::new(cond_expr),
+        }
     };
 
     cfg.add(
@@ -436,10 +457,10 @@ fn process_for_block(
     );
 
     cfg.set_basic_block(body_block);
-    loops.new_scope(end_block, next_block);
+    loops.enter_scope(end_block, next_block);
     vartab.new_dirty_tracker();
 
-    for stmt in &execution_block.body {
+    for stmt in &execution_block.statements {
         statement(stmt, contract_no, loops, ns, cfg, vartab, early_return, opt);
     }
 
@@ -451,7 +472,7 @@ fn process_for_block(
 
     cfg.set_basic_block(next_block);
 
-    for stmt in &post_block.body {
+    for stmt in &post_block.statements {
         statement(stmt, contract_no, loops, ns, cfg, vartab, early_return, opt);
     }
 
@@ -464,4 +485,68 @@ fn process_for_block(
     cfg.set_phis(next_block, set.clone());
     cfg.set_phis(end_block, set.clone());
     cfg.set_phis(cond_block, set);
+}
+
+/// Generate CFG code for a switch statement
+fn switch(
+    condition: &YulExpression,
+    cases: &[CaseBlock],
+    default: &Option<YulBlock>,
+    loops: &mut LoopScopes,
+    contract_no: usize,
+    ns: &Namespace,
+    vartab: &mut Vartable,
+    cfg: &mut ControlFlowGraph,
+    early_return: &Option<Instr>,
+    opt: &Options,
+) {
+    let cond = expression(condition, contract_no, ns, vartab, cfg, opt);
+    let end_switch = cfg.new_basic_block("end_switch".to_string());
+
+    let current_block = cfg.current_block();
+
+    vartab.new_dirty_tracker();
+    let mut cases_cfg: Vec<(Expression, usize)> = Vec::with_capacity(cases.len());
+    for (item_no, item) in cases.iter().enumerate() {
+        let case_cond =
+            expression(&item.condition, contract_no, ns, vartab, cfg, opt).cast(&cond.ty(), ns);
+        let case_block = cfg.new_basic_block(format!("case_{item_no}"));
+        cfg.set_basic_block(case_block);
+        for stmt in &item.block.statements {
+            statement(stmt, contract_no, loops, ns, cfg, vartab, early_return, opt);
+        }
+        if item.block.is_next_reachable() {
+            cfg.add(vartab, Instr::Branch { block: end_switch });
+        }
+        cases_cfg.push((case_cond, case_block));
+    }
+
+    let default_block = if let Some(default_block) = default {
+        let new_block = cfg.new_basic_block("default".to_string());
+        cfg.set_basic_block(new_block);
+        for stmt in &default_block.statements {
+            statement(stmt, contract_no, loops, ns, cfg, vartab, early_return, opt);
+        }
+        if default_block.is_next_reachable() {
+            cfg.add(vartab, Instr::Branch { block: end_switch });
+        }
+        new_block
+    } else {
+        end_switch
+    };
+
+    cfg.set_phis(end_switch, vartab.pop_dirty_tracker());
+
+    cfg.set_basic_block(current_block);
+
+    cfg.add(
+        vartab,
+        Instr::Switch {
+            cond,
+            cases: cases_cfg,
+            default: default_block,
+        },
+    );
+
+    cfg.set_basic_block(end_switch);
 }

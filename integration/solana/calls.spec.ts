@@ -1,57 +1,77 @@
-import expect from 'expect';
-import { loadContract, load2ndContract } from './setup';
+// SPDX-License-Identifier: Apache-2.0
 
-describe('Deploy solang contract and test', function () {
+import expect from 'expect';
+import { loadContractAndCallConstructor, loadContractWithProvider } from './setup';
+import { BN } from '@coral-xyz/anchor';
+
+describe('Testing calls', function () {
     this.timeout(100000);
 
     it('external_call', async function () {
-        const { contract: caller, connection, payer, program } = await loadContract('caller', 'caller.abi');
+        let caller = await loadContractAndCallConstructor('caller');
 
-        const callee = await load2ndContract(connection, program, payer, 'callee', 'callee.abi');
+        const provider = caller.provider;
 
+        const callee = await loadContractWithProvider(provider, 'callee');
 
-        const callee2 = await load2ndContract(connection, program, payer, 'callee2', 'callee2.abi');
+        const callee2 = await loadContractWithProvider(provider, 'callee2');
 
-        await callee.functions.set_x(102);
+        await callee.program.methods.setX(new BN(102))
+            .accounts({ dataAccount: callee.storage.publicKey })
+            .rpc({commitment: "processed"});
 
-        let res = await callee.functions.get_x({ simulate: true });
+        let res = await callee.program.methods.getX()
+            .accounts({ dataAccount: callee.storage.publicKey })
+            .view({commitment: "processed"});
 
-        expect(Number(res.result)).toBe(102);
+        expect(res).toEqual(new BN(102));
 
-        let address_caller = '0x' + caller.storage.toBuffer().toString('hex');
-        let address_callee = '0x' + callee.storage.toBuffer().toString('hex');
-        let address_callee2 = '0x' + callee2.storage.toBuffer().toString('hex');
+        res = await caller.program.methods.whoAmI()
+            .view({commitment: "processed"});
 
-        res = await caller.functions.who_am_i({ simulate: true });
+        expect(res).toStrictEqual(caller.program_key);
 
-        expect(res.result).toBe(address_caller);
+        await caller.program.methods.doCall(new BN(13123))
+            .accounts({
+                callee_dataAccount: callee.storage.publicKey,
+                callee_pid: callee.program_key,
+                })
+            .rpc({commitment: "processed"});
 
-        await caller.functions.do_call(address_callee, "13123", {
-            writableAccounts: [callee.storage],
-            accounts: [program.publicKey]
-        });
+        res = await callee.program.methods.getX()
+            .accounts({ dataAccount: callee.storage.publicKey })
+            .view({commitment: "processed"});
 
-        res = await callee.functions.get_x({ simulate: true });
+        expect(res).toEqual(new BN(13123));
 
-        expect(Number(res.result)).toBe(13123);
+        res = await caller.program.methods.doCall2(new BN(20000))
+            .accounts({
+                callee_dataAccount: callee.storage.publicKey,
+                callee_pid: callee.program_key,
+            })
+            .view({commitment: "processed"});
 
-        res = await caller.functions.do_call2(address_callee, 20000, {
-            simulate: true,
-            accounts: [callee.storage, program.publicKey]
-        });
+        expect(res).toEqual(new BN(33123));
 
-        expect(Number(res.result)).toBe(33123);
+        res = await caller.program.methods.doCall3([new BN(3), new BN(5), new BN(7), new BN(9)], "yo")
+            .accounts({
+                callee2_pid: callee2.program_key,
+                callee_pid: callee.program_key,
+            })
+            .view({commitment: "processed"});
 
-        let all_keys = [program.publicKey, callee.storage, callee2.storage];
+        expect(res.return0).toEqual(new BN(24));
+        expect(res.return1).toBe("my name is callee");
 
-        res = await caller.functions.do_call3(address_callee, address_callee2, ["3", "5", "7", "9"], "yo", { accounts: all_keys });
+        res = await caller.program.methods.doCall4([new BN(1), new BN(2), new BN(3), new BN(4)], "asda")
+            .accounts({
+                callee2_pid: callee2.program_key,
+                callee_pid: callee.program_key,
+                other_callee2: callee2.program_key,
+            })
+            .view({commitment: "processed"});
 
-        expect(Number(res.result[0])).toBe(24);
-        expect(res.result[1]).toBe("my name is callee");
-
-        res = await caller.functions.do_call4(address_callee, address_callee2, ["1", "2", "3", "4"], "asda", { accounts: all_keys });
-
-        expect(Number(res.result[0])).toBe(10);
-        expect(res.result[1]).toBe("x:asda");
+        expect(res.return0).toEqual(new BN(10));
+        expect(res.return1).toBe("x:asda");
     });
 });

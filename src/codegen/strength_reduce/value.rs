@@ -12,9 +12,9 @@ use std::fmt;
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub(super) struct Value {
     // which bits are known
-    pub(super) known_bits: BitArray<Lsb0, [u8; 32]>,
+    pub(super) known_bits: BitArray<[u8; 32], Lsb0>,
     // value
-    pub(super) value: BitArray<Lsb0, [u8; 32]>,
+    pub(super) value: BitArray<[u8; 32], Lsb0>,
     // type
     pub(super) bits: usize,
 }
@@ -25,7 +25,7 @@ impl fmt::Display for Value {
             write!(
                 f,
                 "{}",
-                BigInt::from_signed_bytes_le(self.value.as_buffer())
+                BigInt::from_signed_bytes_le(&self.value.into_inner())
             )
         } else if self.all_unknown() {
             write!(f, "unknown")
@@ -33,8 +33,8 @@ impl fmt::Display for Value {
             write!(
                 f,
                 "{} k:{}",
-                BigInt::from_signed_bytes_le(self.value.as_buffer()),
-                hex::encode(self.value[0..self.bits].as_slice())
+                BigInt::from_signed_bytes_le(&self.value.into_inner()),
+                hex::encode(self.value[0..self.bits].to_bitvec().as_raw_slice())
             )
         }
     }
@@ -46,7 +46,7 @@ fn dump_set(name: &str, set: &HashSet<Value>) {
         "{}:{}",
         name,
         set.iter()
-            .map(|v| format!("{}", v))
+            .map(|v| format!("{v}"))
             .collect::<Vec<String>>()
             .join(",")
     );
@@ -58,15 +58,16 @@ pub(super) fn is_single_constant(set: &HashSet<Value>) -> Option<BigInt> {
         let v = set.iter().next().unwrap();
 
         if v.all_known() {
-            return Some(BigInt::from_signed_bytes_le(v.value[0..v.bits].as_slice()));
+            let digits = v.value[0..v.bits].to_bitvec();
+            return Some(BigInt::from_signed_bytes_le(digits.as_raw_slice()));
         }
     }
 
     None
 }
 
-/// Get the maximum unsigned value in a set
-pub(super) fn set_max_signed(set: &HashSet<Value>) -> Option<BigInt> {
+/// Get the maximum signed value in a set
+pub(super) fn get_max_signed(set: &HashSet<Value>) -> Option<BigInt> {
     let mut m = BigInt::zero();
 
     for v in set {
@@ -77,9 +78,9 @@ pub(super) fn set_max_signed(set: &HashSet<Value>) -> Option<BigInt> {
         }
 
         let v = if sign {
-            BigInt::from_signed_bytes_le(v.get_signed_min_value().as_buffer())
+            BigInt::from_signed_bytes_le(&v.get_signed_min_value().into_inner())
         } else {
-            BigInt::from_signed_bytes_le(v.get_signed_max_value().as_buffer())
+            BigInt::from_signed_bytes_le(&v.get_signed_max_value().into_inner())
         };
 
         if v.abs() > m.abs() {
@@ -90,12 +91,12 @@ pub(super) fn set_max_signed(set: &HashSet<Value>) -> Option<BigInt> {
     Some(m)
 }
 
-/// Get the maximum signed value in a set
-pub(super) fn set_max_unsigned(set: &HashSet<Value>) -> BigInt {
+/// Get the maximum unsigned value in a set
+pub(super) fn get_max_unsigned(set: &HashSet<Value>) -> BigInt {
     let mut m = BigInt::zero();
 
     for v in set {
-        let v = BigInt::from_bytes_le(Sign::Plus, v.get_unsigned_max_value().as_buffer());
+        let v = BigInt::from_bytes_le(Sign::Plus, &v.get_unsigned_max_value().into_inner());
 
         m = std::cmp::max(v, m);
     }
@@ -134,7 +135,7 @@ impl Value {
         } else {
             // the value might be negative. So, we want to know which bits are zero
             let mut v = self.get_unsigned_min_value();
-            v[self.bits - 1..].set_all(true);
+            v[self.bits - 1..].fill(true);
             v
         }
     }
@@ -151,7 +152,7 @@ impl Value {
         } else {
             // the value might be negative. So, we want to know which bits are zero
             let mut v = self.get_unsigned_max_value();
-            v[self.bits - 1..].set_all(true);
+            v[self.bits - 1..].fill(true);
             v
         }
     }

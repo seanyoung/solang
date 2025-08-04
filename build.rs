@@ -5,11 +5,18 @@ use std::process::Command;
 fn main() {
     #[cfg(feature = "llvm")]
     {
+        let status = Command::new("make")
+            .args(["-C", "stdlib"])
+            .status()
+            .expect("could not execute make");
+        assert!(status.success(), "building stdlib failed");
+
         // compile our linker
         let cxxflags = Command::new("llvm-config")
-            .args(&["--cxxflags"])
+            .args(["--cxxflags"])
             .output()
             .expect("could not execute llvm-config");
+        assert!(cxxflags.status.success(), "llvm-config failed");
 
         let cxxflags = String::from_utf8(cxxflags.stdout).unwrap();
 
@@ -29,24 +36,22 @@ fn main() {
 
         // add the llvm linker
         let libdir = Command::new("llvm-config")
-            .args(&["--libdir"])
+            .args(["--libdir"])
             .output()
             .unwrap();
         let libdir = String::from_utf8(libdir.stdout).unwrap();
 
-        println!("cargo:libdir={}", libdir);
-        for lib in &["lldELF", "lldDriver", "lldCore", "lldCommon", "lldWasm"] {
-            println!("cargo:rustc-link-lib=static={}", lib);
+        println!("cargo:libdir={libdir}");
+        for lib in &["lldELF", "lldCommon", "lldWasm"] {
+            println!("cargo:rustc-link-lib=static={lib}");
         }
 
-        // And all the symbols were not using, needed by Windows and debug builds
-        for lib in &["lldReaderWriter", "lldMachO", "lldYAML"] {
-            println!("cargo:rustc-link-lib=static={}", lib);
-        }
+        // And all the symbols we're not using, needed by Windows and debug builds
+        println!("cargo:rustc-link-lib=static=lldMachO");
     }
 
     let output = Command::new("git")
-        .args(&["describe", "--tags"])
+        .args(["describe", "--tags", "--always"])
         .output()
         .unwrap();
     let solang_version = if output.stdout.is_empty() {
@@ -55,7 +60,7 @@ fn main() {
         String::from_utf8(output.stdout).unwrap()
     };
 
-    println!("cargo:rustc-env=SOLANG_VERSION={}", solang_version);
+    println!("cargo:rustc-env=SOLANG_VERSION={solang_version}");
 
     // Make sure we have an 8MiB stack on Windows. Windows defaults to a 1MB
     // stack, which is not big enough for debug builds

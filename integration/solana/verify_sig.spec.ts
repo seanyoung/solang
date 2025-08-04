@@ -1,29 +1,39 @@
-import { Contract, publicKeyToHex } from '@solana/solidity';
-import { Keypair } from '@solana/web3.js';
+// SPDX-License-Identifier: Apache-2.0
+
+import { Keypair, Ed25519Program, SYSVAR_INSTRUCTIONS_PUBKEY, PublicKey } from '@solana/web3.js';
 import expect from 'expect';
 import nacl from 'tweetnacl';
-import { loadContract } from './setup';
+import { loadContractAndCallConstructor } from './setup';
+import { Program } from '@coral-xyz/anchor';
 
 describe('Signature Check', function () {
     this.timeout(150000);
 
-    let contract: Contract;
+    let program: Program;
+    let storage: Keypair;
     let payer: Keypair;
 
     before(async function () {
-        ({ contract, payer } = await loadContract('verify_sig', 'verify_sig.abi'));
+        ({ program, storage, payer } = await loadContractAndCallConstructor('verify_sig'));
     });
 
     it('check valid signature', async function () {
         const message = Buffer.from('Foobar');
         const signature = nacl.sign.detached(message, payer.secretKey);
 
-        const { result } = await contract.functions.verify(
-            publicKeyToHex(payer.publicKey), message, signature,
-            {
-                ed25519sigs: [{ publicKey: payer.publicKey, message, signature }],
-            }
-        );
+        let instr1 = Ed25519Program.createInstructionWithPublicKey({
+            publicKey: payer.publicKey.toBytes(),
+            message,
+            signature,
+            instructionIndex: 0
+        });
+
+        const result = await program.methods.verify(payer.publicKey, message, Buffer.from(signature))
+            .preInstructions([instr1])
+            .accounts({
+                SysvarInstruction: SYSVAR_INSTRUCTIONS_PUBKEY
+            })
+            .view();
 
         expect(result).toEqual(true);
     });
@@ -36,12 +46,19 @@ describe('Signature Check', function () {
 
         broken_signature[1] ^= 1;
 
-        const { result } = await contract.functions.verify(
-            publicKeyToHex(payer.publicKey), message, broken_signature,
-            {
-                ed25519sigs: [{ publicKey: payer.publicKey, message, signature }],
-            }
-        );
+        let instr1 = Ed25519Program.createInstructionWithPublicKey({
+            publicKey: payer.publicKey.toBytes(),
+            message,
+            signature,
+            instructionIndex: 0
+        });
+
+        const result = await program.methods.verify(payer.publicKey, message, Buffer.from(broken_signature))
+            .preInstructions([instr1])
+            .accounts({
+                SysvarInstruction: SYSVAR_INSTRUCTIONS_PUBKEY
+            })
+            .view();
 
         expect(result).toEqual(false);
     });

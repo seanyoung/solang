@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{account_new, build_solidity};
-use ethabi::{ethereum_types::U256, Token};
+use crate::{account_new, build_solidity, BorshToken};
+use num_bigint::BigInt;
+use num_traits::{One, Zero};
 
 #[test]
 fn simple_mapping() {
@@ -24,39 +25,100 @@ fn simple_mapping() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     for i in 0..10 {
-        vm.function(
-            "set",
-            &[
-                Token::Uint(U256::from(102 + i)),
-                Token::Uint(U256::from(300331 + i)),
-            ],
-            &[],
-            None,
+        vm.function("set")
+            .arguments(&[
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(102 + i),
+                },
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(300331 + i),
+                },
+            ])
+            .accounts(vec![("dataAccount", data_account)])
+            .call();
+    }
+
+    for i in 0..10 {
+        let returns = vm
+            .function("get")
+            .arguments(&[BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(102 + i),
+            }])
+            .accounts(vec![("dataAccount", data_account)])
+            .call()
+            .unwrap();
+
+        assert_eq!(
+            returns,
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(300331 + i)
+            }
         );
     }
 
+    let returns = vm
+        .function("get")
+        .arguments(&[BorshToken::Uint {
+            width: 64,
+            value: BigInt::from(101u8),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 64,
+            value: BigInt::zero()
+        }
+    );
+
+    vm.function("rm")
+        .arguments(&[BorshToken::Uint {
+            width: 64,
+            value: BigInt::from(104u8),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
     for i in 0..10 {
-        let returns = vm.function("get", &[Token::Uint(U256::from(102 + i))], &[], None);
-
-        assert_eq!(returns, vec![Token::Uint(U256::from(300331 + i))]);
-    }
-
-    let returns = vm.function("get", &[Token::Uint(U256::from(101))], &[], None);
-
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
-
-    vm.function("rm", &[Token::Uint(U256::from(104))], &[], None);
-
-    for i in 0..10 {
-        let returns = vm.function("get", &[Token::Uint(U256::from(102 + i))], &[], None);
+        let returns = vm
+            .function("get")
+            .arguments(&[BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(102 + i),
+            }])
+            .accounts(vec![("dataAccount", data_account)])
+            .call()
+            .unwrap();
 
         if 102 + i != 104 {
-            assert_eq!(returns, vec![Token::Uint(U256::from(300331 + i))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(300331 + i)
+                }
+            );
         } else {
-            assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::zero(),
+                }
+            );
         }
     }
 }
@@ -91,39 +153,60 @@ fn less_simple_mapping() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     vm.function(
-        "set_string",
+        "set_string")
+        .arguments(
         &[
-            Token::Uint(U256::from(12313132131321312311213131u128)),
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-        ], &[], None
-    );
-
-    vm.function(
-        "add_int",
-        &[
-            Token::Uint(U256::from(12313132131321312311213131u128)),
-            Token::Int(U256::from(102)),
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12313132131321312311213131u128)
+            },
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
         ],
-        &[],
-        None,
-    );
+    )
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function(
-        "get",
-        &[Token::Uint(U256::from(12313132131321312311213131u128))],
-        &[],
-        None,
-    );
+    vm.function("add_int")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12313132131321312311213131u128),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("get")
+        .arguments(&[BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(12313132131321312311213131u128),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-            Token::Array(vec![Token::Int(U256::from(102))]),
-        ])]
+        BorshToken::Tuple(vec![
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
+            BorshToken::Array(vec![
+                BorshToken::Int{
+                    width: 64,
+                    value: BigInt::from(102u8)
+                },
+            ]),
+        ])
     );
 }
 
@@ -157,34 +240,51 @@ fn string_mapping() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     vm.function(
-        "set_string",
+        "set_string")
+        .arguments(
         &[
-            Token::String(String::from("a")),
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-        ], &[], None
-    );
-
-    vm.function(
-        "add_int",
-        &[
-            Token::String(String::from("a")),
-            Token::Int(U256::from(102)),
+            BorshToken::String(String::from("a")),
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
         ],
-        &[],
-        None,
-    );
+    )
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[Token::String(String::from("a"))], &[], None);
+    vm.function("add_int")
+        .arguments(&[
+            BorshToken::String(String::from("a")),
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("get")
+        .arguments(&[BorshToken::String(String::from("a"))])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-            Token::Array(vec![Token::Int(U256::from(102))]),
-        ])]
+        BorshToken::Tuple(vec![
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
+            BorshToken::Array(vec![
+                BorshToken::Int{
+                    width: 64,
+                    value: BigInt::from(102u8)
+                },
+            ]),
+        ])
     );
 }
 
@@ -192,49 +292,65 @@ fn string_mapping() {
 fn contract_mapping() {
     let mut vm = build_solidity(
         r#"
-        interface I {}
+          contract foo {
+            mapping (address => string) public map;
 
-        contract foo {
-            mapping (I => string) public map;
-
-            function set(I index, string s) public {
+            function set(address index, string s) public {
                 map[index] = s;
             }
 
-            function get(I index) public returns (string) {
+            function get(address index) public returns (string) {
                 return map[index];
             }
 
-            function rm(I index) public {
+            function rm(address index) public {
                 delete map[index];
             }
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let index = Token::FixedBytes(account_new().to_vec());
+    let index = BorshToken::Address(account_new());
 
     vm.function(
-        "set",
+        "set")
+        .arguments(
         &[
             index.clone(),
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-        ], &[], None
-    );
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
+        ], )
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[index.clone()], &[], None);
+    let returns = vm
+        .function("get")
+        .arguments(&[index.clone()])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder"))]
+        BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder"))
     );
 
-    vm.function("rm", &[index.clone()], &[], None);
+    vm.function("rm")
+        .arguments(&[index.clone()])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[index], &[], None);
+    let returns = vm
+        .function("get")
+        .arguments(&[index])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::String(String::from(""))]);
+    assert_eq!(returns, BorshToken::String(String::from("")));
 }
 
 #[test]
@@ -250,54 +366,67 @@ fn mapping_in_mapping() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "set",
-        &[
-            Token::String(String::from("a")),
-            Token::Int(U256::from(102)),
-            Token::FixedBytes(vec![0x98]),
-        ],
-        &[],
-        None,
-    );
+    vm.function("set")
+        .arguments(&[
+            BorshToken::String(String::from("a")),
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+            BorshToken::FixedBytes(vec![0x98]),
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function(
-        "map",
-        &[
-            Token::String(String::from("a")),
-            Token::Int(U256::from(102)),
-        ],
-        &[],
-        None,
-    );
+    let returns = vm
+        .function("map")
+        .arguments(&[
+            BorshToken::String(String::from("a")),
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::FixedBytes(vec![0x98])]);
+    assert_eq!(returns, BorshToken::uint8_fixed_array(vec![0x98]));
 
-    let returns = vm.function(
-        "map",
-        &[
-            Token::String(String::from("a")),
-            Token::Int(U256::from(103)),
-        ],
-        &[],
-        None,
-    );
+    let returns = vm
+        .function("map")
+        .arguments(&[
+            BorshToken::String(String::from("a")),
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(103u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::FixedBytes(vec![0])]);
+    assert_eq!(returns, BorshToken::uint8_fixed_array(vec![0]));
 
-    let returns = vm.function(
-        "map",
-        &[
-            Token::String(String::from("b")),
-            Token::Int(U256::from(102)),
-        ],
-        &[],
-        None,
-    );
+    let returns = vm
+        .function("map")
+        .arguments(&[
+            BorshToken::String(String::from("b")),
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::FixedBytes(vec![0])]);
+    assert_eq!(returns, BorshToken::uint8_fixed_array(vec![0]));
 }
 
 #[test]
@@ -330,34 +459,59 @@ fn sparse_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     vm.function(
-        "set_string",
+        "set_string")
+        .arguments(
         &[
-            Token::Uint(U256::from(909090909)),
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-        ], &[], None
-    );
+            BorshToken::Uint{
+                width: 256,
+                value: BigInt::from(909090909u64)
+            },
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
+        ], )
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "add_int",
-        &[
-            Token::Uint(U256::from(909090909)),
-            Token::Int(U256::from(102)),
-        ],
-        &[],
-        None,
-    );
+    vm.function("add_int")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(909090909u64),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[Token::Uint(U256::from(909090909))], &[], None);
+    let returns = vm
+        .function("get")
+        .arguments(&[BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(909090909u64),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-            Token::Array(vec![Token::Int(U256::from(102))]),
-        ])]
+        BorshToken::Tuple(vec![
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
+            BorshToken::Array(vec![
+                BorshToken::Int{
+                    width: 64,
+                    value: BigInt::from(102u8)
+                },
+            ]),
+        ])
     );
 }
 
@@ -391,39 +545,59 @@ fn massive_sparse_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     vm.function(
-        "set_string",
+        "set_string")
+        .arguments(
         &[
-            Token::Uint(U256::from(786868768768678687686877u128)),
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-        ], &[], None
-    );
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(786868768768678687686877u128)
+            },
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
+        ], )
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "add_int",
-        &[
-            Token::Uint(U256::from(786868768768678687686877u128)),
-            Token::Int(U256::from(102)),
-        ],
-        &[],
-        None,
-    );
+    vm.function("add_int")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(786868768768678687686877u128),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function(
-        "get",
-        &[Token::Uint(U256::from(786868768768678687686877u128))],
-        &[],
-        None,
-    );
+    let returns = vm
+        .function("get")
+        .arguments(&[BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(786868768768678687686877u128),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
-            Token::Array(vec![Token::Int(U256::from(102))]),
-        ])]
+        BorshToken::Tuple(vec![
+            BorshToken::String(String::from("This is a string which should be a little longer than 32 bytes so we the the abi encoder")),
+            BorshToken::Array(vec![
+                BorshToken::Int {
+                    width: 64,
+                    value: BigInt::from(102u8)
+                },
+            ]),
+        ])
     );
 }
 
@@ -461,96 +635,210 @@ fn mapping_in_dynamic_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "setNumber",
-        &[Token::Int(U256::from(2147483647))],
-        &[],
-        None,
-    );
+    vm.function("setNumber")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(2147483647),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function("push", &[], &[], None);
-    vm.function("push", &[], &[], None);
+    vm.function("push")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("push")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     for array_no in 0..2 {
         for i in 0..10 {
-            vm.function(
-                "set",
-                &[
-                    Token::Uint(U256::from(array_no)),
-                    Token::Uint(U256::from(102 + i + array_no * 500)),
-                    Token::Uint(U256::from(300331 + i)),
-                ],
-                &[],
-                None,
-            );
+            vm.function("set")
+                .arguments(&[
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(array_no),
+                    },
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(102 + i + array_no * 500),
+                    },
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(300331 + i),
+                    },
+                ])
+                .accounts(vec![("dataAccount", data_account)])
+                .call();
         }
     }
 
     for array_no in 0..2 {
         for i in 0..10 {
-            let returns = vm.function(
-                "map",
-                &[
-                    Token::Uint(U256::from(array_no)),
-                    Token::Uint(U256::from(102 + i + array_no * 500)),
-                ],
-                &[],
-                None,
-            );
+            let returns = vm
+                .function("map")
+                .arguments(&[
+                    BorshToken::Uint {
+                        width: 256,
+                        value: BigInt::from(array_no),
+                    },
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(102 + i + array_no * 500),
+                    },
+                ])
+                .accounts(vec![("dataAccount", data_account)])
+                .call()
+                .unwrap();
 
-            assert_eq!(returns, vec![Token::Uint(U256::from(300331 + i))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(300331 + i)
+                },
+            );
         }
     }
 
-    let returns = vm.function(
-        "map",
-        &[Token::Uint(U256::from(0)), Token::Uint(U256::from(101))],
-        &[],
-        None,
+    let returns = vm
+        .function("map")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::zero(),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(101u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 64,
+            value: BigInt::zero()
+        }
     );
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
-
-    vm.function(
-        "rm",
-        &[Token::Uint(U256::from(0)), Token::Uint(U256::from(104))],
-        &[],
-        None,
-    );
+    vm.function("rm")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(104u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     for i in 0..10 {
-        let returns = vm.function(
-            "map",
-            &[Token::Uint(U256::from(0)), Token::Uint(U256::from(102 + i))],
-            &[],
-            None,
-        );
+        let returns = vm
+            .function("map")
+            .arguments(&[
+                BorshToken::Uint {
+                    width: 256,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(102 + i),
+                },
+            ])
+            .accounts(vec![("dataAccount", data_account)])
+            .call()
+            .unwrap();
 
         if 102 + i != 104 {
-            assert_eq!(returns, vec![Token::Uint(U256::from(300331 + i))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(300331 + i)
+                },
+            );
         } else {
-            assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::zero()
+                }
+            );
         }
     }
 
-    let returns = vm.function("length", &[], &[], None);
-    assert_eq!(returns, vec![Token::Uint(U256::from(2))]);
+    let returns = vm
+        .function("length")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 64,
+            value: BigInt::from(2u8)
+        }
+    );
 
-    vm.function("pop", &[], &[], None);
+    vm.function("pop")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("length", &[], &[], None);
-    assert_eq!(returns, vec![Token::Uint(U256::from(1))]);
+    let returns = vm
+        .function("length")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 64,
+            value: BigInt::one()
+        }
+    );
 
-    vm.function("pop", &[], &[], None);
+    vm.function("pop")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("length", &[], &[], None);
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
+    let returns = vm
+        .function("length")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 64,
+            value: BigInt::zero()
+        }
+    );
 
-    let returns = vm.function("number", &[], &[], None);
+    let returns = vm
+        .function("number")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::Int(U256::from(2147483647))]);
+    assert_eq!(
+        returns,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(2147483647u64)
+        }
+    );
 }
 
 #[test]
@@ -591,86 +879,170 @@ fn mapping_in_struct_in_dynamic_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "setNumber",
-        &[Token::Int(U256::from(2147483647))],
-        &[],
-        None,
-    );
+    vm.function("setNumber")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(2147483647),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function("push", &[], &[], None);
-    vm.function("push", &[], &[], None);
+    vm.function("push")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("push")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     for array_no in 0..2 {
         for i in 0..10 {
-            vm.function(
-                "set",
-                &[
-                    Token::Uint(U256::from(array_no)),
-                    Token::Uint(U256::from(102 + i + array_no * 500)),
-                    Token::Uint(U256::from(300331 + i)),
-                ],
-                &[],
-                None,
-            );
+            vm.function("set")
+                .arguments(&[
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(array_no),
+                    },
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(102 + i + array_no * 500),
+                    },
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(300331 + i),
+                    },
+                ])
+                .accounts(vec![("dataAccount", data_account)])
+                .call();
         }
     }
 
     for array_no in 0..2 {
         for i in 0..10 {
-            let returns = vm.function(
-                "get",
-                &[
-                    Token::Uint(U256::from(array_no)),
-                    Token::Uint(U256::from(102 + i + array_no * 500)),
-                ],
-                &[],
-                None,
-            );
+            let returns = vm
+                .function("get")
+                .arguments(&[
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(array_no),
+                    },
+                    BorshToken::Uint {
+                        width: 64,
+                        value: BigInt::from(102 + i + array_no * 500),
+                    },
+                ])
+                .accounts(vec![("dataAccount", data_account)])
+                .call()
+                .unwrap();
 
-            assert_eq!(returns, vec![Token::Uint(U256::from(300331 + i))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 256,
+                    value: BigInt::from(300331 + i)
+                },
+            );
         }
     }
 
-    let returns = vm.function(
-        "get",
-        &[Token::Uint(U256::from(0)), Token::Uint(U256::from(101))],
-        &[],
-        None,
+    let returns = vm
+        .function("get")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(101u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::zero(),
+        },
     );
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
-
-    vm.function(
-        "rm",
-        &[Token::Uint(U256::from(0)), Token::Uint(U256::from(104))],
-        &[],
-        None,
-    );
+    vm.function("rm")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(104u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     for i in 0..10 {
-        let returns = vm.function(
-            "get",
-            &[Token::Uint(U256::from(0)), Token::Uint(U256::from(102 + i))],
-            &[],
-            None,
-        );
+        let returns = vm
+            .function("get")
+            .arguments(&[
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(102 + i),
+                },
+            ])
+            .accounts(vec![("dataAccount", data_account)])
+            .call()
+            .unwrap();
 
         if 102 + i != 104 {
-            assert_eq!(returns, vec![Token::Uint(U256::from(300331 + i))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 256,
+                    value: BigInt::from(300331 + i)
+                }
+            );
         } else {
-            assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
+            assert_eq!(
+                returns,
+                BorshToken::Uint {
+                    width: 256,
+                    value: BigInt::zero()
+                }
+            );
         }
     }
 
-    vm.function("pop", &[], &[], None);
-    vm.function("pop", &[], &[], None);
+    vm.function("pop")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("pop")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("number", &[], &[], None);
+    let returns = vm
+        .function("number")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::Int(U256::from(2147483647))]);
+    assert_eq!(
+        returns,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(2147483647u64),
+        }
+    );
 }
 
 #[test]
@@ -686,8 +1058,8 @@ contract DeleteTest {
 
     mapping(uint => data_struct) example;
 
-    function addData() public  {
-        data_struct dt = data_struct({addr1: address(this), addr2: msg.sender});
+    function addData(address sender) public  {
+        data_struct dt = data_struct({addr1: address(this), addr2: sender});
         uint id = 1;
         example[id] = dt;
     }
@@ -701,27 +1073,42 @@ contract DeleteTest {
         uint id = 1;
         return example[id];
     }
-
 }
         "#,
     );
 
-    vm.constructor("DeleteTest", &[]);
-    let _ = vm.function("addData", &[], &[], None);
-    let _ = vm.function("deltest", &[], &[], None);
-    let returns = vm.function("get", &[], &[], None);
+    let sender = account_new();
+
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    let _ = vm
+        .function("addData")
+        .arguments(&[BorshToken::Address(sender)])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    let _ = vm
+        .function("deltest")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    let returns = vm
+        .function("get")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::FixedBytes(vec![
+        BorshToken::Tuple(vec![
+            BorshToken::Address([
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0
             ]),
-            Token::FixedBytes(vec![
+            BorshToken::Address([
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0
             ])
-        ])],
+        ]),
     );
 }
 
@@ -744,11 +1131,11 @@ contract CrowdFunding {
     mapping (uint => Campaign) campaigns;
 
 
-function newCampaign() public returns (uint campaignID) {
+function newCampaign(address sender) public returns (uint campaignID) {
     campaignID = numCampaigns++;
     Campaign storage _campaign = campaigns[campaignID];
-    _campaign.funders[0] = Funder(msg.sender, 100);
-    _campaign.arr_mp[1][0] = Funder(msg.sender, 105);
+    _campaign.funders[0] = Funder(sender, 100);
+    _campaign.arr_mp[1][0] = Funder(sender, 105);
 }
 
 function getAmt() public view returns (uint) {
@@ -765,15 +1152,51 @@ function getArrAmt() public view returns (uint) {
         "#,
     );
 
-    vm.constructor("CrowdFunding", &[]);
+    let sender = account_new();
 
-    let ret = vm.function("newCampaign", &[], &[], None);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    assert_eq!(ret, vec![Token::Uint(U256::from(0))]);
+    let ret = vm
+        .function("newCampaign")
+        .arguments(&[BorshToken::Address(sender)])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    let ret = vm.function("getAmt", &[], &[], None);
-    assert_eq!(ret, vec![Token::Uint(U256::from(100))]);
+    assert_eq!(
+        ret,
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::zero(),
+        }
+    );
 
-    let ret = vm.function("getArrAmt", &[], &[], None);
-    assert_eq!(ret, vec![Token::Uint(U256::from(105))]);
+    let ret = vm
+        .function("getAmt")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+    assert_eq!(
+        ret,
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(100u8),
+        }
+    );
+
+    let ret = vm
+        .function("getArrAmt")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+    assert_eq!(
+        ret,
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(105u8),
+        }
+    );
 }

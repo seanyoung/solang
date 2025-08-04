@@ -1,1 +1,8 @@
-*	@seanyoung
+# SPDX-License-Identifier: Apache-2.0
+
+* @seanyoung @salaheldinsoliman
+src/emit/solana/ @seanyoung
+src/emit/soroban/ @salaheldinsoliman
+integration/solana/ @seanyoung
+integration/anchor/ @seanyoung
+integration/soroban/ @salaheldinsoliman

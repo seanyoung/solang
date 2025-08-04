@@ -1,14 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { getOrCreateAssociatedTokenAccount, createMint, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Keypair } from '@solana/web3.js';
-import { publicKeyToHex } from '@solana/solidity';
-import { loadContract } from './setup';
+import { loadContractAndCallConstructor } from './setup';
+import { BN } from '@coral-xyz/anchor';
 import expect from 'expect';
 
 describe('Create spl-token and use from solidity', function () {
     this.timeout(500000);
 
     it('spl-token', async function name() {
-        const { contract, connection, payer, program } = await loadContract('Token', 'Token.abi');
+        const { provider, storage, payer, program } = await loadContractAndCallConstructor('Token');
+        const connection = provider.connection;
 
         const mintAuthority = Keypair.generate();
         const freezeAuthority = Keypair.generate();
@@ -21,9 +24,17 @@ describe('Create spl-token and use from solidity', function () {
             3
         );
 
-        await contract.functions.set_mint(publicKeyToHex(mint));
+        await program.methods.setMint(mint)
+            .accounts({ dataAccount: storage.publicKey })
+            .rpc();
 
-        expect(Number((await contract.functions.total_supply({ accounts: [mint] })).result)).toBe(0);
+        let total_supply = await program.methods.totalSupply()
+            .accounts({
+                dataAccount: storage.publicKey,
+                mint: mint
+            })
+            .view();
+        expect(total_supply.toNumber()).toBe(0);
 
         const tokenAccount = await getOrCreateAssociatedTokenAccount(
             connection,
@@ -32,24 +43,39 @@ describe('Create spl-token and use from solidity', function () {
             payer.publicKey
         )
 
-        expect(Number((await contract.functions.get_balance(publicKeyToHex(tokenAccount.address), { accounts: [tokenAccount.address] })).result)).toBe(0);
+        let balance = await program.methods.getBalance()
+            .accounts({account: tokenAccount.address})
+            .view();
+
+        expect(balance.toNumber()).toBe(0);
 
         // Now let's mint some tokens
-        await contract.functions.mint_to(
-            publicKeyToHex(tokenAccount.address),
-            publicKeyToHex(mintAuthority.publicKey),
-            100000,
-            {
-                accounts: [TOKEN_PROGRAM_ID],
-                writableAccounts: [mint, tokenAccount.address],
-                signers: [mintAuthority]
-            },
-        );
+        await program.methods.mintTo(
+            new BN(100000))
+            .accounts({
+                dataAccount: storage.publicKey,
+                mint: mint,
+                account: tokenAccount.address,
+                authority: mintAuthority.publicKey,
+            })
+            .signers([mintAuthority])
+            .rpc();
 
         // let's check the balances
-        expect(Number((await contract.functions.total_supply({ accounts: [mint] })).result)).toBe(100000);
+        total_supply = await program.methods.totalSupply()
+            .accounts({
+                dataAccount: storage.publicKey,
+                mint: mint,
+            })
+            .view();
 
-        expect(Number((await contract.functions.get_balance(publicKeyToHex(tokenAccount.address), { accounts: [tokenAccount.address] })).result)).toBe(100000);
+        expect(total_supply.toNumber()).toBe(100000);
+
+        balance = await program.methods.getBalance()
+            .accounts({account: tokenAccount.address})
+            .view();
+
+        expect(balance.toNumber()).toBe(100000);
 
         // transfer
         const theOutsider = Keypair.generate();
@@ -61,41 +87,66 @@ describe('Create spl-token and use from solidity', function () {
             theOutsider.publicKey
         )
 
-        await contract.functions.transfer(
-            publicKeyToHex(tokenAccount.address),
-            publicKeyToHex(otherTokenAccount.address),
-            publicKeyToHex(payer.publicKey),
-            70000,
-            {
-                accounts: [TOKEN_PROGRAM_ID],
-                writableAccounts: [otherTokenAccount.address, tokenAccount.address],
-                signers: [payer]
-            },
-        );
+        await program.methods.transfer(
+            new BN(70000))
+            .accounts(
+                {
+                    from: tokenAccount.address,
+                    to: otherTokenAccount.address,
+                    owner: payer.publicKey
+                }
+            )
+            .signers([payer])
+            .rpc();
 
+        total_supply = await program.methods.totalSupply()
+            .accounts({
+                dataAccount: storage.publicKey,
+                mint: mint,
+            })
+            .view();
 
-        expect(Number((await contract.functions.total_supply({ accounts: [mint] })).result)).toBe(100000);
+        expect(total_supply.toNumber()).toBe(100000);
+        balance = await program.methods.getBalance()
+            .accounts({account: tokenAccount.address})
+            .view();
 
-        expect(Number((await contract.functions.get_balance(publicKeyToHex(tokenAccount.address), { accounts: [tokenAccount.address] })).result)).toBe(30000);
+        expect(balance.toNumber()).toBe(30000);
 
-        expect(Number((await contract.functions.get_balance(publicKeyToHex(otherTokenAccount.address), { accounts: [otherTokenAccount.address] })).result)).toBe(70000);
+        balance = await program.methods.getBalance()
+            .accounts({account: otherTokenAccount.address})
+            .view();
+
+        expect(balance.toNumber()).toBe(70000);
 
         // burn
-        await contract.functions.burn(
-            publicKeyToHex(otherTokenAccount.address),
-            publicKeyToHex(theOutsider.publicKey),
-            20000,
-            {
-                accounts: [TOKEN_PROGRAM_ID],
-                writableAccounts: [otherTokenAccount.address, mint],
-                signers: [theOutsider]
-            },
-        );
+        await program.methods.burn(
+            new BN(20000))
+            .accounts({
+                mint: mint,
+                account: otherTokenAccount.address,
+                owner: theOutsider.publicKey,
+            })
+            .signers([theOutsider])
+            .rpc();
 
-        expect(Number((await contract.functions.total_supply({ accounts: [mint] })).result)).toBe(80000);
+        total_supply = await program.methods.totalSupply()
+            .accounts({
+                dataAccount: storage.publicKey,
+                mint: mint,
+            })
+            .view();
 
-        expect(Number((await contract.functions.get_balance(publicKeyToHex(tokenAccount.address), { accounts: [tokenAccount.address] })).result)).toBe(30000);
+        expect(total_supply.toNumber()).toBe(80000);
+        balance = await program.methods.getBalance()
+            .accounts({account: tokenAccount.address})
+            .view();
 
-        expect(Number((await contract.functions.get_balance(publicKeyToHex(otherTokenAccount.address), { accounts: [otherTokenAccount.address] })).result)).toBe(50000);
+        expect(balance.toNumber()).toBe(30000);
+        balance = await program.methods.getBalance()
+            .accounts({account: otherTokenAccount.address})
+            .view();
+
+        expect(balance.toNumber()).toBe(50000);
     });
 });

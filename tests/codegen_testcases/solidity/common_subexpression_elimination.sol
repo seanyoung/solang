@@ -1,4 +1,4 @@
-// RUN: --target substrate --emit cfg
+// RUN: --target polkadot --emit cfg
 
 // Tests control commands
 contract c1 {
@@ -40,7 +40,7 @@ contract c1 {
         // CHECK: ty:int256 %d = (%x * %1.cse_temp)
         // CHECK: ty:int256 %2.cse_temp = (%x + %d)
         // CHECK: ty:int256 %3.cse_temp = ((arg #0) - (arg #1))
-        // CEHCK: branchcond (signed more %2.cse_temp > int256 0), block1, block2
+        // CHECK: branchcond (signed more %2.cse_temp > int256 0), block1, block2
         if (x + d > 0) {
 			int t = a-b;
             // CHECK: ty:int256 %t = %3.cse_temp
@@ -162,7 +162,7 @@ contract c1 {
         // CHECK: ty:int256 %d = (%x * %1.cse_temp)
         // CHECK: ty:int256 %2.cse_temp = (%x + %d)
         // CHECK: ty:int256 %3.cse_temp = ((arg #0) - (arg #1))
-        // CEHCK: branchcond (%2.cse_temp > int256 0), block1, block2
+        // CHECK: branchcond (signed more %2.cse_temp > int256 0), block1, block2
         if (x + d > 0) {
 			int t = a-b;
             // CHECK: ty:int256 %t = %3.cse_temp
@@ -222,15 +222,14 @@ contract c1 {
 
 // BEGIN-CHECK: c1::function::test9
     function test9(int a, int b) public view returns (int ret) {
-        stTest instance = stTest(2, 3);
+        stTest struct_instance = stTest(2, 3);
         // CHECK:  ty:int256 %1.cse_temp = ((arg #0) + (arg #1))
-        int x = a + b + instance.a;
-        // CHECK: ty:int256 %x = (%1.cse_temp + (load (struct %instance field 0)))
-        // CHECK: ty:int256 %2.cse_temp = ((arg #0) * (arg #1))
-        // CHECK: branchcond (signed less (%x + int256((load (struct %instance field 1)))) < int256 0)
-        if(x  + int(instance.b) < 0) {
-            // CHECK: ty:uint256 %p = uint256((%1.cse_temp + (load (struct %instance field 0))))
-            uint p = uint(a+b+instance.a);
+        int x = a + b + struct_instance.a;
+        // CHECK: ty:int256 %x = (%1.cse_temp + (load (struct %struct_instance field 0)))
+        // CHECK: branchcond (signed less (%x + int256((load (struct %struct_instance field 1)))) < int256 0)
+        if(x  + int(struct_instance.b) < 0) {
+            // CHECK: ty:uint256 %p = uint256((%1.cse_temp + (load (struct %struct_instance field 0))))
+            uint p = uint(a+b+struct_instance.a);
             bool e = p > 50;
         }
 
@@ -244,6 +243,7 @@ contract c1 {
         // CHECK: branchcond %e3, block3, block4
         if (trunc2 < trunc && trunc > 2) {
             // CHECK: = %e2
+            // CHECK: ty:int256 %2.cse_temp = ((arg #0) * (arg #1))
             // CHECK: ty:int256 %p2 = %1.cse_temp
             int p2 = a+b;
             int p3 = p2 - x + a + b;
@@ -299,31 +299,31 @@ contract c1 {
     function test11(int a, int b) public returns (int) {
         string ast = "Hello!";
         string bst = "from Solang";
-        string cst = ast + bst;
+        string cst = string.concat(ast, bst);
         // CHECK: ty:int256 %1.cse_temp = (signed divide (arg #0) / (int256 2 * (arg #1)))
         // CHECK: call c1::c1::function::get__int256_int256 %1.cse_temp, (arg #1)
         int p = a + get(a/(2*b), b);
 
         bool e = (ast == bst) || p < 2;
-        // CHECK: ty:bool %2.cse_temp = (strcmp (%ast) (%bst))
-        // CHECK: branchcond %2.cse_temp, block2, block1
+        // CHECK: ty:bool %3.cse_temp = (strcmp (%ast) (%bst))
+        // CHECK: branchcond %3.cse_temp, block2, block1
         bool e2 = e;
-        // CHECK: branchcond (strcmp (%cst) (%cst)), block3, block4
-        if (ast + bst == cst) {
+        // CHECK: branchcond (strcmp ((builtin Concat (%ast, %bst))) (%cst)), block3, block4
+        if (string.concat(ast, bst) == cst) {
             // CHECK: call c1::c1::function::get__int256_int256 %1.cse_temp, (arg #1)
             require(a + get(a/(2*b), b) < 0);
-            emit testEvent(a + get(a/(2*b) -p, b), p, ast+bst);
+            emit testEvent(a + get(a/(2*b) -p, b), p, string.concat(ast, bst));
         }
 
-        // CHECK: branchcond %2.cse_temp, block7, block8
+        // CHECK: branchcond %3.cse_temp, block21, block22
         if (ast == bst) {
-            ast = ast + "b";
+            ast = string.concat(ast, "b");
         }
         // CHECK: call c1::c1::function::get__int256_int256 (%1.cse_temp - %p), (arg #1)
 
-        // CHECK: branchcond (strcmp (%ast) (%bst)), block10, block11
+        // CHECK: branchcond (strcmp (%ast) (%bst)), block24, block25
         while (ast == bst) {
-            ast = ast + "a";
+            ast = string.concat(ast, "a");
         }
 
         // CHECK: call c1::c1::function::get__int256_int256 (arg #1), (signed divide (arg #0) / (arg #1))
@@ -378,17 +378,17 @@ contract c1 {
         if(vec.length - (a+b) == 1) {
             // CHECK:  call c1::c1::function::testing__bytes %c
             string k = testing(bytes(c));
-            string p = "a" +k;
-            // CHECK: ty:string %p = (concat ((alloc string uint32 1 "a")) (%k))
+            string p = string.concat("a", k);
+            // CHECK: ty:string %p = (builtin Concat ((alloc string uint32 1 "a"), %k))
             // CHECK: branchcond ((builtin ArrayLength (%p)) == uint32 2), block11, block12
             if(p.length == 2) {
-                // CHECK: ty:string %p1 = (concat ((alloc string uint32 1 "a")) (%k))
-                string p1 = "a" + k;
+                // CHECK: ty:string %p1 = (builtin Concat ((alloc string uint32 1 "a"), %k))
+                string p1 = string.concat("a", k);
                 string l = p1;
             }
         }
 
-        // CHECK: branchcond (signed less (%a + (arg #1)) < int256 0), block14, block15
+        // CHECK: branchcond (signed less %2.cse_temp < int256 0), block14, block15
         while(a+b < 0) {
             // CHECK: branchcond (strcmp (%c) ("a")), block16, block17
             if("a" == c) {
@@ -435,7 +435,7 @@ contract c1 {
         b3 = bytes("d");
         for(int p=0; p<a; ++p) {
             doNothing(b1);
-            // CHECK: ty:bytes32 %b2.155 = bytes from:bytes32 (%b3)
+            // CHECK: ty:bytes32 %b2.155 = bytes32 from:bytes (%b3)
             bytes32 b2 = bytes32(b3);
             doNothing(b2);
         }
@@ -457,7 +457,6 @@ contract c1 {
             return (a << b) + 1;
         }
 
-        // CHECK: ty:uint256 %3.cse_temp = ((arg #0) & (arg #1))
         // CHECK: branchcond %2.cse_temp, block4, block3
         if(!b1 || c > 0) {
             // CHECK: = %b1
@@ -470,6 +469,7 @@ contract c1 {
             c++;
         }
 
+        // CHECK: ty:uint256 %3.cse_temp = ((arg #0) & (arg #1))
         // CHECK: branchcond (%3.cse_temp == uint256 0), block13, block14
         if (a & b == 0) {
             return c--;

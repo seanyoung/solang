@@ -13,7 +13,7 @@ pub struct Def {
     pub assignment_no: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transfer {
     Gen { def: Def, var_no: usize },
     Mod { var_no: usize },
@@ -25,16 +25,16 @@ impl fmt::Display for Transfer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Transfer::Gen { def, var_no } => {
-                write!(f, "Gen %{} = ({}, {})", var_no, def.block_no, def.instr_no)
+                write!(f, "Gen %{var_no} = ({}, {})", def.block_no, def.instr_no)
             }
             Transfer::Mod { var_no } => {
-                write!(f, "Mod %{}", var_no)
+                write!(f, "Mod %{var_no}")
             }
             Transfer::Copy { var_no, src } => {
-                write!(f, "Copy %{} from %{}", var_no, src)
+                write!(f, "Copy %{var_no} from %{src}")
             }
             Transfer::Kill { var_no } => {
-                write!(f, "Kill %{}", var_no)
+                write!(f, "Kill %{var_no}")
             }
         }
     }
@@ -63,21 +63,29 @@ pub fn find(cfg: &mut ControlFlowGraph) {
             apply_transfers(transfers, &mut vars);
         }
 
-        for edge in block_edges(&cfg.blocks[block_no]) {
+        for edge in cfg.blocks[block_no].successors() {
             if cfg.blocks[edge].defs != vars {
-                blocks_todo.insert(edge);
+                let mut changed = false;
+
                 // merge incoming set
                 for (var_no, defs) in &vars {
                     if let Some(entry) = cfg.blocks[edge].defs.get_mut(var_no) {
                         for (incoming_def, incoming_modified) in defs {
                             if let Some(e) = entry.get_mut(incoming_def) {
-                                *e |= *incoming_modified;
+                                if !*e && *incoming_modified {
+                                    *e = true;
+                                    changed = true;
+                                }
                             } else {
-                                entry.insert(*incoming_def, *incoming_modified);
+                                changed |=
+                                    entry.insert(*incoming_def, *incoming_modified).is_none();
                             }
                         }
                     } else {
-                        cfg.blocks[edge].defs.insert(*var_no, defs.clone());
+                        changed |= cfg.blocks[edge]
+                            .defs
+                            .insert(*var_no, defs.clone())
+                            .is_none();
                     }
 
                     // If a definition from a block executed later reaches this block,
@@ -85,9 +93,13 @@ pub fn find(cfg: &mut ControlFlowGraph) {
                     // common subexpression elimination.
                     for (incoming_def, _) in defs {
                         if incoming_def.block_no >= edge {
-                            cfg.blocks[edge].loop_reaching_variables.insert(*var_no);
+                            changed |= cfg.blocks[edge].loop_reaching_variables.insert(*var_no);
                         }
                     }
+                }
+
+                if changed {
+                    blocks_todo.insert(edge);
                 }
             }
         }
@@ -121,7 +133,7 @@ fn instr_transfers(block_no: usize, block: &BasicBlock) -> Vec<Vec<Transfer>> {
         transfers.push(match instr {
             Instr::Set {
                 res,
-                expr: Expression::Variable(_, _, src),
+                expr: Expression::Variable { var_no: src, .. },
                 ..
             } => {
                 vec![
@@ -134,7 +146,6 @@ fn instr_transfers(block_no: usize, block: &BasicBlock) -> Vec<Vec<Transfer>> {
             }
             Instr::Set { res, .. } => set_var(&[*res]),
             Instr::Call { res, .. } => set_var(res),
-            Instr::AbiDecode { res, .. } => set_var(res),
             Instr::LoadStorage { res, .. } | Instr::PopStorage { res: Some(res), .. } => {
                 set_var(&[*res])
             }
@@ -182,8 +193,8 @@ fn instr_transfers(block_no: usize, block: &BasicBlock) -> Vec<Vec<Transfer>> {
 
 fn array_var(expr: &Expression) -> Option<usize> {
     match expr {
-        Expression::Variable(_, _, var_no) => Some(*var_no),
-        Expression::Subscript(_, _, _, expr, _) | Expression::StructMember(_, _, expr, _) => {
+        Expression::Variable { var_no, .. } => Some(*var_no),
+        Expression::Subscript { expr, .. } | Expression::StructMember { expr, .. } => {
             array_var(expr)
         }
         _ => None,
@@ -194,7 +205,7 @@ pub fn apply_transfers(transfers: &[Transfer], vars: &mut IndexMap<usize, IndexM
     for transfer in transfers {
         match transfer {
             Transfer::Kill { var_no } => {
-                vars.remove(var_no);
+                vars.swap_remove(var_no);
             }
             Transfer::Mod { var_no } => {
                 if let Some(entry) = vars.get_mut(var_no) {
@@ -221,35 +232,4 @@ pub fn apply_transfers(transfers: &[Transfer], vars: &mut IndexMap<usize, IndexM
             }
         }
     }
-}
-
-pub fn block_edges(block: &BasicBlock) -> Vec<usize> {
-    let mut out = Vec::new();
-
-    // out cfg has edge as the last instruction in a block; EXCEPT
-    // Instr::AbiDecode() which has an edge when decoding fails
-    for instr in &block.instr {
-        match instr {
-            Instr::Branch { block } => {
-                out.push(*block);
-            }
-            Instr::BranchCond {
-                true_block,
-                false_block,
-                ..
-            } => {
-                out.push(*true_block);
-                out.push(*false_block);
-            }
-            Instr::AbiDecode {
-                exception_block: Some(block),
-                ..
-            } => {
-                out.push(*block);
-            }
-            _ => (),
-        }
-    }
-
-    out
 }

@@ -2,7 +2,7 @@ import "solana" as sol;
 
 contract spl {
 	function foo() public returns (bool, address) {
-		sol.AccountMeta meta = sol.AccountMeta(address(msg.sender), true, false);
+		sol.AccountMeta meta = sol.AccountMeta(address(this), true, false);
 		return (meta.is_writable, meta.pubkey);
 	}
 
@@ -16,3 +16,7 @@ contract spl {
 	}
 
 }
+
+// ---- Expect: diagnostics ----
+// warning: 4:2-47: function can be declared 'view'
+// warning: 9:2-56: function can be declared 'pure'

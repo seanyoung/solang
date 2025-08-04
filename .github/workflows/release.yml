@@ -8,35 +8,14 @@ name: Build Release Binaries
 jobs:
   linux-x86-64:
     name: Linux x86-64
-    runs-on: ubuntu-20.04
+    runs-on: solang-ubuntu-latest
+    container: ghcr.io/hyperledger/solang-llvm:ci-7
     steps:
     - name: Checkout sources
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         submodules: recursive
-    - run: git clone --depth 1 --branch solana-rustc/13.0-2021-08-08 https://github.com/solana-labs/llvm-project.git
-    - name: Install Ninja
-      uses: llvm/actions/install-ninja@main
-    - run: cmake -G Ninja -DLLVM_ENABLE_ASSERTIONS=On -DLLVM_ENABLE_TERMINFO=Off
-        -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
-        -DLLVM_ENABLE_PROJECTS='clang;lld'
-        -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
-      working-directory: ./llvm-project/
-    - run: cmake --build . --target install
-      working-directory: ./llvm-project/
-    - run: tar Jcf ./llvm13.0-linux-x86-64.tar.xz ./llvm13.0/
-    - name: Upload llvm
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: llvm13.0-linux-x86-64.tar.xz
-        asset_name: llvm13.0-linux-x86-64.tar.xz
-        tag: ${{ github.ref }}
-    - name: Add LLVM to Path
-      run: echo "$(pwd)/llvm13.0/bin" >> $GITHUB_PATH
-    - name: Rust stable
-      run: rustup default 1.59.0
+    - uses: dtolnay/rust-toolchain@1.85.0
     - name: Build
       run: cargo build --verbose --release
     - name: Run tests
@@ -51,35 +30,24 @@ jobs:
 
   linux-arm64:
     name: Linux arm64
-    runs-on: linux-arm64
-    if: ${{ github.repository_owner == 'hyperledger-labs' }}
+    runs-on: solang-arm
+    if: ${{ github.repository_owner == 'hyperledger-solang' }}
     steps:
     - name: Checkout sources
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         submodules: recursive
-    - run: git clone --depth 1 --branch solana-rustc/13.0-2021-08-08 https://github.com/solana-labs/llvm-project.git
-    - run: cmake -G Ninja -DLLVM_ENABLE_ASSERTIONS=On -DLLVM_ENABLE_TERMINFO=Off
-        -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
-        -DLLVM_ENABLE_PROJECTS='clang;lld'
-        -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
-      working-directory: ./llvm-project/
-    - run: cmake --build . --target install
-      working-directory: ./llvm-project/
-      # compression takes a long time on linux-arm64, use multithreaded compression
-    - run: tar cf ./llvm13.0-linux-arm64.tar.xz -I 'xz -T 0' ./llvm13.0/
-    - name: Upload llvm
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: llvm13.0-linux-arm64.tar.xz
-        asset_name: llvm13.0-linux-arm64.tar.xz
-        tag: ${{ github.ref }}
+    - name: Basic build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc g++ make
+    - uses: dtolnay/rust-toolchain@1.85.0
+    - name: Get LLVM
+      run: curl -sSL --output llvm16.0-linux-arm64.tar.xz https://github.com/hyperledger-solang/solang-llvm/releases/download/llvm16-0/llvm16.0-linux-arm64.tar.xz
+    - name: Extract LLVM
+      run: tar Jxf llvm16.0-linux-arm64.tar.xz
     - name: Add LLVM to Path
-      run: echo "$(pwd)/llvm13.0/bin" >> $GITHUB_PATH
-    - name: Rust stable
-      run: rustup default 1.59.0
+      run: echo "$(pwd)/llvm16.0/bin" >> $GITHUB_PATH
     - name: Build
       run: cargo build --verbose --release
     - name: Run tests
@@ -97,35 +65,18 @@ jobs:
     runs-on: windows-latest
     steps:
     - name: Checkout sources
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         submodules: recursive
-    - run: git clone --depth 1 --branch solana-rustc/13.0-2021-08-08 https://github.com/solana-labs/llvm-project.git
-      # We may not have enough space to compile llvm, see https://github.com/actions/virtual-environments/issues/326
-      working-directory: C:\
-    - name: Setup Windows
-      uses: llvm/actions/setup-windows@main
-      with:
-        arch: amd64
-    - name: Install Ninja
-      uses: llvm/actions/install-ninja@main
-    - run: cmake -G Ninja -DLLVM_ENABLE_ASSERTIONS=On -DLLVM_ENABLE_TERMINFO=Off
-        -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
-        '-DLLVM_ENABLE_PROJECTS=clang;lld'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=C:/llvm13.0 llvm
-      working-directory: C:\llvm-project
-    - run: cmake --build . --target install
-      working-directory: C:\llvm-project
-    - run: Compress-Archive -Path C:\llvm13.0 -DestinationPath C:\llvm13.0-win.zip
-    - name: Upload llvm
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: C:\llvm13.0-win.zip
-        asset_name: llvm13.0-win.zip
-        tag: ${{ github.ref }}
+    - name: Download LLVM
+      run: curl -sSL -o c:\llvm.zip https://github.com/hyperledger-solang/solang-llvm/releases/download/llvm16-0/llvm16.0-win.zip
+    - name: Extract LLVM
+      run: unzip c:\llvm.zip -d c:/
     - name: Add LLVM to Path
-      run: echo "c:\llvm13.0\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8
+      run: echo "c:\llvm16.0\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8
+    - uses: dtolnay/rust-toolchain@1.85.0
+      with:
+        components: clippy
     - name: Build
       run: cargo build --release --verbose
     - name: Run tests
@@ -140,36 +91,19 @@ jobs:
 
   mac-arm:
     name: Mac Arm
-    runs-on: macos-arm
-    if: ${{ github.repository_owner == 'hyperledger-labs' }}
+    runs-on: macos-13-xlarge
     steps:
     - name: Checkout sources
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         submodules: recursive
-    - run: git clone --depth 1 --branch solana-rustc/13.0-2021-08-08 https://github.com/solana-labs/llvm-project.git
-    - name: Install Ninja
-      uses: llvm/actions/install-ninja@main
-    - run: cmake -G Ninja -DLLVM_ENABLE_ASSERTIONS=On -DLLVM_ENABLE_TERMINFO=Off
-        -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
-        -DLLVM_ENABLE_PROJECTS='clang;lld'
-        -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
-      working-directory: ./llvm-project/
-    - run: cmake --build . --target install
-      working-directory: ./llvm-project/
-    - run: tar Jcf ./llvm13.0-mac-arm.tar.xz ./llvm13.0/
-    - name: Cache LLVM
-      run: ${{ github.workspace }}/.github/workflows/llvm-cache.sh llvm13.0-mac-arm.tar.xz
-    - name: Upload llvm
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: llvm13.0-mac-arm.tar.xz
-        asset_name: llvm13.0-mac-arm.tar.xz
-        tag: ${{ github.ref }}
+    - uses: dtolnay/rust-toolchain@1.85.0
+    - name: Get LLVM
+      run: curl -sSL --output llvm16.0-mac-arm.tar.xz https://github.com/hyperledger-solang/solang-llvm/releases/download/llvm16-0/llvm16.0-mac-arm.tar.xz
+    - name: Extract LLVM
+      run: tar Jxf llvm16.0-mac-arm.tar.xz
     - name: Add LLVM to Path
-      run: echo "$(pwd)/llvm13.0/bin" >> $GITHUB_PATH
+      run: echo "$(pwd)/llvm16.0/bin" >> $GITHUB_PATH
     - name: Build
       run: cargo build --release --verbose
     - name: Run tests
@@ -184,38 +118,19 @@ jobs:
 
   mac-intel:
     name: Mac Intel
-    # The Hyperledger self-hosted intel macs have the label macos-latest
-    # and run macos 12. We don't want to build llvm on macos 12, because
-    # then it can't be used on macos 11.
-    runs-on: macos-11
+    runs-on: macos-13
     steps:
     - name: Checkout sources
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         submodules: recursive
-    - run: git clone --depth 1 --branch solana-rustc/13.0-2021-08-08 https://github.com/solana-labs/llvm-project.git
-    - name: Install Ninja
-      uses: llvm/actions/install-ninja@main
-    - run: cmake -G Ninja -DLLVM_ENABLE_ASSERTIONS=On -DLLVM_ENABLE_TERMINFO=Off
-        -DLLVM_ENABLE_LIBXML2=Off -DLLVM_ENABLE_ZLIB=Off
-        -DLLVM_ENABLE_PROJECTS='clang;lld'
-        -DLLVM_TARGETS_TO_BUILD='WebAssembly;BPF'
-        -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX=../llvm13.0 llvm
-      working-directory: ./llvm-project/
-    - run: cmake --build . --target install
-      working-directory: ./llvm-project/
-    - run: tar Jcf ./llvm13.0-mac-intel.tar.xz ./llvm13.0/
-    - name: Cache LLVM
-      run: ${{ github.workspace }}/.github/workflows/llvm-cache.sh llvm13.0-mac-intel.tar.xz
-    - name: Upload llvm
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: llvm13.0-mac-intel.tar.xz
-        asset_name: llvm13.0-mac-intel.tar.xz
-        tag: ${{ github.ref }}
+    - uses: dtolnay/rust-toolchain@1.85.0
+    - name: Get LLVM
+      run: wget -q -O llvm16.0-mac-intel.tar.xz https://github.com/hyperledger-solang/solang-llvm/releases/download/llvm16-0/llvm16.0-mac-intel.tar.xz
+    - name: Extract LLVM
+      run: tar Jxf llvm16.0-mac-intel.tar.xz
     - name: Add LLVM to Path
-      run: echo "$(pwd)/llvm13.0/bin" >> $GITHUB_PATH
+      run: echo "$(pwd)/llvm16.0/bin" >> $GITHUB_PATH
     - name: Build
       run: cargo build --release --verbose
     - name: Run tests
@@ -234,8 +149,8 @@ jobs:
     needs: [mac-arm, mac-intel]
     steps:
     - run: |
-        curl -L --output solang-mac-intel https://github.com/hyperledger-labs/solang/releases/download/${GITHUB_REF/refs\/tags\//}/solang-mac-intel
-        curl -L --output solang-mac-arm https://github.com/hyperledger-labs/solang/releases/download/${GITHUB_REF/refs\/tags\//}/solang-mac-arm
+        curl -sSL --output solang-mac-intel https://github.com/hyperledger-solang/solang/releases/download/${GITHUB_REF/refs\/tags\//}/solang-mac-intel
+        curl -sSL --output solang-mac-arm https://github.com/hyperledger-solang/solang/releases/download/${GITHUB_REF/refs\/tags\//}/solang-mac-arm
         lipo -create -output solang-mac solang-mac-intel solang-mac-arm
     - name: Upload binary
       uses: svenstaro/upload-release-action@v2
@@ -247,28 +162,13 @@ jobs:
 
   container:
     name: Container Image
-    runs-on: ubuntu-20.04
-    if: ${{ github.repository_owner != 'hyperledger-labs' }}
+    runs-on: solang-ubuntu-latest
     steps:
     - name: Checkout sources
-      uses: actions/checkout@v2
-    - run:
-        docker build . -t ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF/refs\/tags\//}
-            --label org.opencontainers.image.description="Solidity Compiler for Solana, Substrate, and ewasm version $(git describe --tags)"
+      uses: actions/checkout@v4
     - run: |
         echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
-        docker push ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF/refs\/tags\//}
-
-  container-multiarch:
-    name: Multiarch Container Image
-    runs-on: linux-arm64
-    if: ${{ github.repository_owner == 'hyperledger-labs' }}
-    steps:
-    - name: Checkout sources
-      uses: actions/checkout@v3
-    - run: |
-        echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
-        docker buildx build . --push \
-          -t ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF/refs\/tags\//} \
-          --platform linux/arm64,linux/amd64 \
-          --label org.opencontainers.image.description="Solidity Compiler for Solana, Substrate, and ewasm version $(git describe --tags)"
+        docker buildx build . \
+          --push \
+          --tag ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF/refs\/tags\//} \
+          --label org.opencontainers.image.description="Solidity Compiler for Solana and Polkadot version $(git describe --tags)"

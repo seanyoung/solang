@@ -29,3 +29,8 @@ contract C {
     */
     function f5() pure public returns (int, int b) { return (1, 2); }
 }
+
+// ---- Expect: diagnostics ----
+// error: 21:15-18: function return value named 'feh' not found
+// error: 22:15-18: function return value named 'foo' not found
+// error: 28:15-18: function return value named 'foo' not found

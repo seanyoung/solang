@@ -21,7 +21,7 @@ contract testing {
             // CHECK: ty:uint256 %temp.11 = uint256 0
             // CHECK: branch block3
             // CHECK: block2: # else
-            // CHECK: ty:uint256 %temp.11 = (unsigned modulo ((arg #0) + (arg #1)) % (arg #2))
+            // CHECK: ty:uint256 %temp.11 = (builtin AddMod ((arg #1), (arg #0), (arg #2)))
             // CHECK: branch block3
             // CHECK: block3: # endif
             // CHECK: # phis: temp.11
@@ -33,7 +33,7 @@ contract testing {
             // CHECK: ty:uint256 %temp.12 = uint256 0
             // CHECK: branch block6
             // CHECK: block5: # else
-            // CHECK: ty:uint256 %temp.12 = (unsigned modulo ((arg #0) * (arg #1)) % (arg #2))
+            // CHECK: ty:uint256 %temp.12 = (builtin MulMod ((arg #1), (arg #0), (arg #2)))
             // CHECK: branch block6
             // CHECK: block6: # endif
             // CHECK: # phis: temp.12
@@ -45,7 +45,7 @@ contract testing {
     function byte_builtin(int64 a, uint256 b) public pure {
         assembly {
             let x := byte(b, a)
-            // CHECK: branchcond ((arg #1) >= uint256 32), block1, block2
+            // CHECK: branchcond (unsigned (arg #1) >= uint256 32), block1, block2
             // CHECK: block1: # then
             // CHECK: ty:uint256 %temp.13 = uint256 0
             // CHECK: branch block3

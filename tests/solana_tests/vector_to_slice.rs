@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::build_solidity;
-use ethabi::Token;
+use crate::{build_solidity, BorshToken};
 
 #[test]
 fn test_slice_in_phi() {
@@ -12,7 +11,7 @@ fn test_slice_in_phi() {
             string bst = "from Solang";
 
             while (ast == bst) {
-                ast = ast + "a";
+                ast = string.concat(ast, "a");
             }
 
             return ast;
@@ -21,8 +20,11 @@ fn test_slice_in_phi() {
     "#;
 
     let mut vm = build_solidity(file);
-    vm.constructor("c1", &[]);
-    let returns = vm.function("test", &[], &[], None);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    let returns = vm.function("test").call().unwrap();
 
-    assert_eq!(returns, vec![Token::String(String::from("Hello!"))]);
+    assert_eq!(returns, BorshToken::String(String::from("Hello!")));
 }

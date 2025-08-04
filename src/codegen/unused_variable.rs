@@ -2,7 +2,8 @@
 
 use super::Options;
 use crate::codegen::{cfg::ControlFlowGraph, vartable::Vartable, OptimizationLevel};
-use crate::sema::ast::{Expression, Function, Namespace};
+use crate::sema::ast::RetrieveType;
+use crate::sema::ast::{Builtin, Expression, Function, Namespace};
 use crate::sema::symtable::VariableUsage;
 
 /// This struct saves the parameters to call 'check_side_effects_expressions'
@@ -19,44 +20,58 @@ pub struct SideEffectsCheckParameters<'a> {
 /// Check if we should remove an assignment. The expression in the argument is the left-hand side
 /// of the assignment
 pub fn should_remove_assignment(
-    ns: &Namespace,
     exp: &Expression,
     func: &Function,
     opt: &Options,
+    ns: &Namespace,
 ) -> bool {
     if opt.opt_level == OptimizationLevel::None {
         return false;
     }
 
     match &exp {
-        Expression::StorageVariable(_, _, contract_no, offset) => {
-            let var = &ns.contracts[*contract_no].variables[*offset];
-            !var.read
+        Expression::Variable { var_no, .. } => should_remove_variable(*var_no, func, opt, ns),
+
+        Expression::StructMember { expr, .. } => should_remove_assignment(expr, func, opt, ns),
+
+        Expression::Subscript { array, .. } => should_remove_assignment(array, func, opt, ns),
+
+        Expression::StorageLoad { expr, .. }
+        | Expression::Load { expr, .. }
+        | Expression::Trunc { expr, .. }
+        | Expression::Cast { expr, .. }
+        | Expression::BytesCast { expr, .. } => should_remove_assignment(expr, func, opt, ns),
+
+        Expression::Builtin {
+            kind: Builtin::ArrayLength,
+            args,
+            ..
+        } => should_remove_assignment(&args[0], func, opt, ns),
+
+        Expression::Builtin {
+            kind: Builtin::ArrayPop | Builtin::ArrayPush,
+            args,
+            ..
+        } => {
+            // If the argument is a storage reference, the operation shall not be removed
+            if args[0].ty().is_contract_storage() {
+                return false;
+            }
+
+            should_remove_assignment(&args[0], func, opt, ns)
         }
-
-        Expression::Variable(_, _, offset) => should_remove_variable(offset, func, opt),
-
-        Expression::StructMember(_, _, str, _) => should_remove_assignment(ns, str, func, opt),
-
-        Expression::Subscript(_, _, _, array, _) => should_remove_assignment(ns, array, func, opt),
-
-        Expression::StorageLoad(_, _, expr)
-        | Expression::Load(_, _, expr)
-        | Expression::Trunc(_, _, expr)
-        | Expression::Cast(_, _, expr)
-        | Expression::BytesCast(_, _, _, expr) => should_remove_assignment(ns, expr, func, opt),
 
         _ => false,
     }
 }
 
 /// Checks if we should remove a variable
-pub fn should_remove_variable(pos: &usize, func: &Function, opt: &Options) -> bool {
+pub fn should_remove_variable(pos: usize, func: &Function, opt: &Options, ns: &Namespace) -> bool {
     if opt.opt_level == OptimizationLevel::None {
         return false;
     }
 
-    let var = &func.symtable.vars[pos];
+    let var = &func.symtable.vars[&pos];
 
     //If the variable has never been read nor assigned, we can remove it right away.
     if !var.read && !var.assigned {
@@ -64,7 +79,7 @@ pub fn should_remove_variable(pos: &usize, func: &Function, opt: &Options) -> bo
     }
 
     // If the variable has been assigned, we must detect special cases
-    // Parameters and return variable cannot be removed
+    // Parameters and return variables cannot be removed
     if !var.read
         && var.assigned
         && matches!(
@@ -73,7 +88,7 @@ pub fn should_remove_variable(pos: &usize, func: &Function, opt: &Options) -> bo
         )
     {
         // Variables that are reference to other cannot be removed
-        return !var.is_reference();
+        return !var.is_reference(ns);
     }
 
     false

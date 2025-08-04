@@ -1,3 +1,0 @@
-contract test {
-            bool test;
-        }

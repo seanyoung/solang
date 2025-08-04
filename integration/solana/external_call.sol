@@ -1,21 +1,30 @@
 
 contract caller {
-    function do_call(callee e, int64 v) public {
-        e.set_x(v);
+    
+    @account(callee_pid)
+    function do_call(int64 v) external {
+        callee.set_x{program_id: tx.accounts.callee_pid.key}(v);
     }
 
-    function do_call2(callee e, int64 v) view public returns (int64) {
-        return v + e.get_x();
+    @account(callee_pid)
+    function do_call2(int64 v) view external returns (int64) {
+        return v + callee.get_x{program_id: tx.accounts.callee_pid.key}();
     }
 
     // call two different functions
-    function do_call3(callee e, callee2 e2, int64[4] memory x, string memory y) pure public returns (int64, string memory) {
-        return (e2.do_stuff(x), e.get_name());
+    @account(callee_pid)
+    @account(callee2_pid)
+    function do_call3(int64[4] memory x, string memory y) external returns (int64, string memory) {
+        return (callee2.do_stuff{program_id: tx.accounts.callee2_pid.key}(x), 
+                callee.get_name{program_id: tx.accounts.callee_pid.key}());
     }
 
     // call two different functions
-    function do_call4(callee e, callee2 e2, int64[4] memory x, string memory y) pure public returns (int64, string memory) {
-        return (e2.do_stuff(x), e.call2(e2, y));
+    @account(callee_pid)
+    @account(callee2_pid)
+    function do_call4(int64[4] memory x, string memory y) external returns (int64, string memory) {
+        return (callee2.do_stuff{program_id: tx.accounts.callee2_pid.key}(x), 
+                callee.call2{program_id: tx.accounts.callee_pid.key}(y));
     }
 
     function who_am_i() public view returns (address) {
@@ -34,8 +43,9 @@ contract callee {
         return x;
     }
 
-    function call2(callee2 e2, string s) public pure returns (string) {
-        return e2.do_stuff2(s);
+    @account(other_callee2)
+    function call2(string s) external returns (string) {
+        return callee2.do_stuff2{program_id: tx.accounts.other_callee2.key}(s);
     }
 
     function get_name() public pure returns (string) {
@@ -55,6 +65,6 @@ contract callee2 {
     }
 
     function do_stuff2(string x) public pure returns (string) {
-        return "x:" + x;
+        return string.concat("x:", x);
     }
 }

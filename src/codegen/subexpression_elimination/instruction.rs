@@ -5,41 +5,59 @@ use crate::codegen::subexpression_elimination::common_subexpression_tracker::Com
 use crate::codegen::subexpression_elimination::AvailableExpression;
 use crate::codegen::subexpression_elimination::{AvailableExpressionSet, AvailableVariable};
 use crate::codegen::Expression;
+use crate::sema::ast::ExternalCallAccounts;
 
-impl AvailableExpressionSet {
+impl<'a, 'b: 'a> AvailableExpressionSet<'a> {
     /// Check if we can add the expressions of an instruction to the graph
     pub fn process_instruction(
         &mut self,
-        instr: &Instr,
+        instr: &'b Instr,
         ave: &mut AvailableExpression,
-        cst: &mut CommonSubExpressionTracker,
+        cst: &mut Option<&mut CommonSubExpressionTracker>,
     ) {
         match instr {
             Instr::BranchCond { cond: expr, .. }
             | Instr::LoadStorage { storage: expr, .. }
             | Instr::ClearStorage { storage: expr, .. }
             | Instr::Print { expr }
-            | Instr::AssertFailure { expr: Some(expr) }
+            | Instr::AssertFailure {
+                encoded_args: Some(expr),
+            }
             | Instr::PopStorage { storage: expr, .. }
-            | Instr::AbiDecode { data: expr, .. }
             | Instr::SelfDestruct { recipient: expr } => {
                 let _ = self.gen_expression(expr, ave, cst);
             }
 
             Instr::Set { res, expr, loc } => {
-                let node_id = self.gen_expression(expr, ave, cst);
-                if node_id.is_some() {
-                    let node = &mut *self
-                        .expression_memory
-                        .get(node_id.as_ref().unwrap())
-                        .unwrap()
-                        .borrow_mut();
+                if cst.is_none() {
+                    // If there is no cst, we are traversing the CFG in reverse, so we kill the
+                    // definition before processing the assignment
+                    // e.g.
+                    // -- Here we have a previous definition of x and x + y is available
+                    // x = x + y -> kill x first, then make x+y available
+                    // -- x+y is not available
+                    self.kill(*res);
+                }
+
+                self.remove_mapped(*res);
+                if let Some(node_id) = self.gen_expression(expr, ave, cst) {
+                    let node = &mut *self.expression_memory.get(&node_id).unwrap().borrow_mut();
                     if !node.available_variable.is_available() {
                         node.available_variable = AvailableVariable::Available(*res, *loc);
+                        self.mapped_variable.insert(*res, node_id);
                     }
                 }
-                cst.invalidate_mapped_variable(res);
-                self.kill(*res);
+
+                if let Some(tracker) = cst {
+                    // If there is a cst, we are traversing the CFG in the same order as code
+                    // execution , so we kill the definition after processing the assignment
+                    // e.g.
+                    // -- x+y not available
+                    // x = x + y -> make x+y available, than make kill x, which also kills x+y
+                    // -- x + y is not available here, because x has a new definition
+                    self.kill(*res);
+                    tracker.invalidate_mapped_variable(*res);
+                }
             }
 
             Instr::PushMemory { value: expr, .. } => {
@@ -50,6 +68,10 @@ impl AvailableExpressionSet {
                 value: item_1,
                 storage: item_2,
                 ..
+            }
+            | Instr::ReturnData {
+                data: item_1,
+                data_len: item_2,
             }
             | Instr::Store {
                 dest: item_1,
@@ -82,16 +104,15 @@ impl AvailableExpressionSet {
             }
 
             Instr::Constructor {
-                args,
+                encoded_args,
                 value,
                 gas,
                 salt,
-                space,
+                address,
+                accounts,
                 ..
             } => {
-                for arg in args {
-                    let _ = self.gen_expression(arg, ave, cst);
-                }
+                let _ = self.gen_expression(encoded_args, ave, cst);
                 if let Some(expr) = value {
                     let _ = self.gen_expression(expr, ave, cst);
                 }
@@ -102,7 +123,11 @@ impl AvailableExpressionSet {
                     let _ = self.gen_expression(expr, ave, cst);
                 }
 
-                if let Some(expr) = space {
+                if let Some(expr) = address {
+                    let _ = self.gen_expression(expr, ave, cst);
+                }
+
+                if let ExternalCallAccounts::Present(expr) = accounts {
                     let _ = self.gen_expression(expr, ave, cst);
                 }
             }
@@ -114,13 +139,12 @@ impl AvailableExpressionSet {
                 gas,
                 accounts,
                 seeds,
-                callty: _,
-                success: _,
+                ..
             } => {
                 if let Some(expr) = address {
                     let _ = self.gen_expression(expr, ave, cst);
                 }
-                if let Some(expr) = accounts {
+                if let ExternalCallAccounts::Present(expr) = accounts {
                     let _ = self.gen_expression(expr, ave, cst);
                 }
                 if let Some(expr) = seeds {
@@ -137,10 +161,7 @@ impl AvailableExpressionSet {
             }
 
             Instr::EmitEvent { data, topics, .. } => {
-                for expr in data {
-                    let _ = self.gen_expression(expr, ave, cst);
-                }
-
+                let _ = self.gen_expression(data, ave, cst);
                 for expr in topics {
                     let _ = self.gen_expression(expr, ave, cst);
                 }
@@ -164,18 +185,27 @@ impl AvailableExpressionSet {
                 let _ = self.gen_expression(bytes, ave, cst);
             }
 
-            Instr::AssertFailure { expr: None }
-            | Instr::Unreachable
+            Instr::Switch { cond, cases, .. } => {
+                let _ = self.gen_expression(cond, ave, cst);
+                for (case, _) in cases {
+                    let _ = self.gen_expression(case, ave, cst);
+                }
+            }
+
+            Instr::AssertFailure { encoded_args: None }
             | Instr::Nop
+            | Instr::ReturnCode { .. }
             | Instr::Branch { .. }
-            | Instr::PopMemory { .. } => {}
+            | Instr::PopMemory { .. }
+            | Instr::AccountAccess { .. }
+            | Instr::Unimplemented { .. } => {}
         }
     }
 
-    /// Regenerate instructions after that we exchanged common subexpressions for temporaries
+    /// Regenerate instructions after that we exchange common subexpressions for temporaries
     pub fn regenerate_instruction(
         &mut self,
-        instr: &Instr,
+        instr: &'b Instr,
         ave: &mut AvailableExpression,
         cst: &mut CommonSubExpressionTracker,
     ) -> Instr {
@@ -227,18 +257,26 @@ impl AvailableExpressionSet {
                 data: self.regenerate_expression(data, ave, cst).1,
             },
 
-            Instr::AssertFailure { expr: Some(exp) } => Instr::AssertFailure {
-                expr: Some(self.regenerate_expression(exp, ave, cst).1),
+            Instr::AssertFailure {
+                encoded_args: Some(exp),
+            } => Instr::AssertFailure {
+                encoded_args: Some(self.regenerate_expression(exp, ave, cst).1),
             },
 
             Instr::Print { expr } => Instr::Print {
                 expr: self.regenerate_expression(expr, ave, cst).1,
             },
 
-            Instr::LoadStorage { res, ty, storage } => Instr::LoadStorage {
+            Instr::LoadStorage {
+                res,
+                ty,
+                storage,
+                storage_type,
+            } => Instr::LoadStorage {
                 res: *res,
                 ty: ty.clone(),
                 storage: self.regenerate_expression(storage, ave, cst).1,
+                storage_type: storage_type.clone(),
             },
 
             Instr::ClearStorage { ty, storage } => Instr::ClearStorage {
@@ -246,10 +284,16 @@ impl AvailableExpressionSet {
                 storage: self.regenerate_expression(storage, ave, cst).1,
             },
 
-            Instr::SetStorage { ty, value, storage } => Instr::SetStorage {
+            Instr::SetStorage {
+                ty,
+                value,
+                storage,
+                storage_type,
+            } => Instr::SetStorage {
                 ty: ty.clone(),
                 value: self.regenerate_expression(value, ave, cst).1,
                 storage: self.regenerate_expression(storage, ave, cst).1,
+                storage_type: storage_type.clone(),
             },
 
             Instr::SetStorageBytes {
@@ -298,12 +342,15 @@ impl AvailableExpressionSet {
                 success,
                 res,
                 contract_no,
-                constructor_no,
-                args,
+                encoded_args,
                 value,
                 gas,
                 salt,
-                space,
+                address,
+                seeds,
+                loc,
+                accounts,
+                constructor_no,
             } => {
                 let new_value = value
                     .as_ref()
@@ -313,7 +360,15 @@ impl AvailableExpressionSet {
                     .as_ref()
                     .map(|expr| self.regenerate_expression(expr, ave, cst).1);
 
-                let new_space = space
+                let new_address = address
+                    .as_ref()
+                    .map(|expr| self.regenerate_expression(expr, ave, cst).1);
+
+                let new_seeds = seeds
+                    .as_ref()
+                    .map(|expr| self.regenerate_expression(expr, ave, cst).1);
+
+                let new_accounts = accounts
                     .as_ref()
                     .map(|expr| self.regenerate_expression(expr, ave, cst).1);
 
@@ -322,26 +377,29 @@ impl AvailableExpressionSet {
                     res: *res,
                     contract_no: *contract_no,
                     constructor_no: *constructor_no,
-                    args: args
-                        .iter()
-                        .map(|v| self.regenerate_expression(v, ave, cst).1)
-                        .collect::<Vec<Expression>>(),
+                    encoded_args: self.regenerate_expression(encoded_args, ave, cst).1,
                     value: new_value,
                     gas: self.regenerate_expression(gas, ave, cst).1,
                     salt: new_salt,
-                    space: new_space,
+                    address: new_address,
+                    seeds: new_seeds,
+                    loc: *loc,
+                    accounts: new_accounts,
                 }
             }
 
             Instr::ExternalCall {
+                loc,
                 success,
                 address,
                 accounts,
-                seeds,
                 payload,
                 value,
                 gas,
                 callty,
+                seeds,
+                contract_function_no,
+                flags,
             } => {
                 let new_address = address
                     .as_ref()
@@ -355,7 +413,12 @@ impl AvailableExpressionSet {
                     .as_ref()
                     .map(|expr| self.regenerate_expression(expr, ave, cst).1);
 
+                let flags = flags
+                    .as_ref()
+                    .map(|expr| self.regenerate_expression(expr, ave, cst).1);
+
                 Instr::ExternalCall {
+                    loc: *loc,
                     success: *success,
                     address: new_address,
                     accounts: new_accounts,
@@ -364,6 +427,8 @@ impl AvailableExpressionSet {
                     value: self.regenerate_expression(value, ave, cst).1,
                     gas: self.regenerate_expression(gas, ave, cst).1,
                     callty: callty.clone(),
+                    contract_function_no: *contract_function_no,
+                    flags,
                 }
             }
 
@@ -376,21 +441,6 @@ impl AvailableExpressionSet {
                 address: self.regenerate_expression(address, ave, cst).1,
                 value: self.regenerate_expression(value, ave, cst).1,
             },
-
-            Instr::AbiDecode {
-                res,
-                selector,
-                exception_block,
-                tys,
-                data,
-            } => Instr::AbiDecode {
-                res: res.clone(),
-                selector: *selector,
-                exception_block: *exception_block,
-                tys: tys.clone(),
-                data: self.regenerate_expression(data, ave, cst).1,
-            },
-
             Instr::SelfDestruct { recipient } => Instr::SelfDestruct {
                 recipient: self.regenerate_expression(recipient, ave, cst).1,
             },
@@ -398,21 +448,14 @@ impl AvailableExpressionSet {
             Instr::EmitEvent {
                 event_no,
                 data,
-                data_tys,
                 topics,
-                topic_tys,
             } => Instr::EmitEvent {
                 event_no: *event_no,
-                data: data
-                    .iter()
-                    .map(|v| self.regenerate_expression(v, ave, cst).1)
-                    .collect::<Vec<Expression>>(),
-                data_tys: data_tys.clone(),
+                data: self.regenerate_expression(data, ave, cst).1,
                 topics: topics
                     .iter()
                     .map(|v| self.regenerate_expression(v, ave, cst).1)
                     .collect::<Vec<Expression>>(),
-                topic_tys: topic_tys.clone(),
             },
 
             Instr::MemCopy {
@@ -425,10 +468,28 @@ impl AvailableExpressionSet {
                 bytes: self.regenerate_expression(bytes, ave, cst).1,
             },
 
+            Instr::Switch {
+                cond,
+                cases,
+                default,
+            } => Instr::Switch {
+                cond: self.regenerate_expression(cond, ave, cst).1,
+                cases: cases
+                    .iter()
+                    .map(|(case, goto)| (self.regenerate_expression(case, ave, cst).1, *goto))
+                    .collect::<Vec<(Expression, usize)>>(),
+                default: *default,
+            },
+
             Instr::WriteBuffer { buf, offset, value } => Instr::WriteBuffer {
                 buf: self.regenerate_expression(buf, ave, cst).1,
                 offset: self.regenerate_expression(offset, ave, cst).1,
                 value: self.regenerate_expression(value, ave, cst).1,
+            },
+
+            Instr::ReturnData { data, data_len } => Instr::ReturnData {
+                data: self.regenerate_expression(data, ave, cst).1,
+                data_len: self.regenerate_expression(data_len, ave, cst).1,
             },
 
             _ => instr.clone(),

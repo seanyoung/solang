@@ -34,22 +34,10 @@ x :superscript:`y`. This can only be done for unsigned types.
   uint64 thousand = 1000;
   uint64 billion = thousand ** 3;
 
-Overflow checking is limited to types of 64 bits and smaller, if the `--math-overflow` command
-line argument is specified. No overflow checking is generated in `unchecked` blocks, like so:
+No overflow checking is generated in `unchecked` blocks, like so:
 
-.. code-block:: solidity
-
-    contract foo {
-        function f(int64 n) public {
-            unchecked {
-                int64 j = n - 1;
-            }
-        }
-    }
-
-.. warning::
-
-  Overflow checking for types larger than ``int64`` (e.g. ``uint128``) is not implemented yet.
+.. include:: ../examples/expression_unchecked.sol
+  :code: solidity
 
 Bitwise operators
 _________________
@@ -108,15 +96,15 @@ The result of a comparison operator can be assigned to a bool. For example:
 
  	bool even = (value % 2) == 0;
 
-It is not allowed to assign an integer to a bool; an explicit comparision is needed to turn it into
+It is not allowed to assign an integer to a bool; an explicit comparison is needed to turn it into
 a bool.
 
 Increment and Decrement operators
 _________________________________
 
-The post-increment and pre-increment operators are implemented like you would expect. So, ``a++``
-evaluates to the value of ``a`` before incrementing, and ``++a`` evaluates to value of ``a``
-after incrementing.
+The post-increment and pre-increment operators are implemented by reading the variable's
+value before or after modifying it. ``i++``returns the value of ``i`` before incrementing,
+and ``++i`` returns the value of ``i`` after incrementing.
 
 this
 ____
@@ -124,30 +112,40 @@ ____
 The keyword ``this`` evaluates to the current contract. The type of this is the type of the
 current contract. It can be cast to ``address`` or ``address payable`` using a cast.
 
-.. code-block:: solidity
+.. tabs::
 
-    contract kadowari {
-        function nomi() public {
-            kadowari c = this;
-            address a = address(this);
-        }
-    }
+    .. group-tab:: Polkadot
+
+        .. include:: ../examples/polkadot/expression_this.sol
+            :code: solidity
+
+
+    .. group-tab:: Solana
+
+        .. include:: ../examples/solana/expression_this.sol
+            :code: solidity
 
 Function calls made via this are function calls through the external call mechanism; i.e. they
 have to serialize and deserialise the arguments and have the external call overhead. In addition,
 this only works with public functions.
 
-.. code-block:: solidity
+.. tabs::
 
-    contract kadowari {
-        function nomi() public {
-            this.nokogiri(102);
-        }
+    .. group-tab:: Polkadot
 
-        function nokogiri(int a) public {
-            // ...
-        }
-    }
+        .. include:: ../examples/polkadot/expression_this_external_call.sol
+            :code: solidity
+
+
+    .. group-tab:: Solana
+
+        .. include:: ../examples/solana/expression_this_external_call.sol
+            :code: solidity
+
+.. note::
+
+    On Solana, ``this`` returns the program account. If you are looking for the data account, please
+    use ``tx.accounts.dataAccount.key``.
 
 type(..) operators
 __________________
@@ -156,19 +154,8 @@ For integer values, the minimum and maximum values the types can hold are availa
 ``type(...).min`` and ``type(...).max`` operators. For unsigned integers, ``type(..).min``
 will always be 0.
 
-.. code-block:: javascript
-
-    contract example {
-        int16 stored;
-
-        function func(int x) public {
-            if (x < type(int16).min || x > type(int16).max) {
-                revert("value will not fit");
-            }
-
-            stored = int16(x);
-        }
-    }
+.. include:: ../examples/type_operator.sol
+  :code: solidity
 
 The `EIP-165 <https://eips.ethereum.org/EIPS/eip-165>`_ interface value can be retrieved using the
 syntax ``type(...).interfaceId``. This is only permitted on interfaces. The interfaceId is simply
@@ -176,23 +163,14 @@ an bitwise XOR of all function selectors in the interface. This makes it possibl
 an interface at runtime, which can be used to write a `supportsInterface()` function as described
 in the EIP.
 
-The contract code for a contract, i.e. the binary WebAssembly or BPF, can be retrieved using the
-``type(c).creationCode`` and ``type(c).runtimeCode`` fields, as ``bytes``. In Ethereum,
-the constructor code is in the ``creationCode`` WebAssembly and all the functions are in
-the ``runtimeCode`` WebAssembly or BPF. Parity Substrate has a single WebAssembly code for both,
-so both fields will evaluate to the same value.
+The contract code for a contract, i.e. the binary WebAssembly or Solana SBF, can be retrieved using the
+``type(c).creationCode`` and ``type(c).runtimeCode`` fields, as ``bytes``. On EVM,
+the constructor code is in the ``creationCode`` and all the functions are in
+the ``runtimeCode``. Polkadot and Solana use the same
+code for both, so those fields will evaluate to the same value.
 
-.. code-block:: solidity
-
-    contract example {
-        function test() public {
-            bytes runtime = type(other).runtimeCode;
-        }
-    }
-
-    contract other {
-        bool foo;
-    }
+.. include:: ../examples/retrieve_contract_code.sol
+  :code: solidity
 
 .. note::
     ``type().creationCode`` and ``type().runtimeCode`` are compile time constants.
@@ -201,33 +179,37 @@ so both fields will evaluate to the same value.
     then the contract code would need to contain itself as a constant array, which would
     result in an contract of infinite size.
 
-Ether and time units
-____________________
+Ether, Sol, and time units
+__________________________
 
 Any decimal numeric literal constant can have a unit denomination. For example
 ``10 minutes`` will evaluate to 600, i.e. the constant will be multiplied by the
 multiplier listed below. The following units are available:
 
-=========== =========================
-Unit        Multiplier
+============ =========================
+Unit         Multiplier
 
-``seconds`` 1
-``minutes`` 60
-``hours``   3600
-``days``    86400
-``weeks``   604800
-``wei``     1
-``ether``   1_000_000_000_000_000_000
-=========== =========================
+``seconds``  1
+``minutes``  60
+``hours``    3600
+``days``     86400
+``weeks``    604800
+``lamports`` 1
+``sol``      1_000_000_000
+``wei``      1
+``gwei``     1_000_000_000
+``ether``    1_000_000_000_000_000_000
+============ =========================
 
-Note that ``ether``, ``wei`` and the other Ethereum currency denominations are available when not
+Note that the Ethereum currency denominations ``ether``, ``gwei``, and ``wei`` are available when not
 compiling for Ethereum, but they will produce warnings.
 
 Casting
 _______
 
 Solidity is very strict about the sign of operations, and whether an assignment can truncate a
-value. You can force the compiler to accept truncations or differences in sign by adding a cast.
+value. You can force the compiler to accept truncations or sign changes by adding an
+explicit cast.
 
 Some examples:
 
@@ -248,7 +230,7 @@ The compiler will say:
    implicit conversion would truncate from int256 to int64
 
 Now you can work around this by adding a cast to the argument to return ``return int64(bar);``,
-however it would be much nicer if the return value matched the argument. Instead, implement
+however it is idiomatic to match the return value type with the argument type. Instead, implement
 multiple overloaded abs() functions, so that there is an ``abs()`` for each type.
 
 It is allowed to cast from a ``bytes`` type to ``int`` or ``uint`` (or vice versa), only if the length
@@ -281,4 +263,5 @@ A similar example for truncation:
   bytes4 start2 = bytes4(bytes8(start));
   // first cast, then truncate as bytes: start2 = hex"dead"
 
-Since ``byte`` is array of one byte, a conversion from ``byte`` to ``uint8`` requires a cast.
+Since ``byte`` is an array of one byte, a conversion from ``byte`` to ``uint8`` requires a cast. This is
+because ``byte`` is an alias for ``bytes1``.

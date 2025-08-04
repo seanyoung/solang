@@ -8,22 +8,25 @@ use crate::sema::yul::functions::{
     process_function_header, resolve_function_definition, FunctionsTable,
 };
 use crate::sema::yul::statements::resolve_yul_statement;
-use solang_parser::{diagnostics::Diagnostic, pt};
+use solang_parser::{
+    diagnostics::Diagnostic,
+    pt::{self, CodeLocation},
+};
 
 /// Resolve an yul block.
 /// Returns the resolved block and a boolean that tells us if the next statement is reachable.
 pub fn resolve_yul_block(
     loc: &pt::Loc,
     statements: &[pt::YulStatement],
-    context: &ExprContext,
+    context: &mut ExprContext,
     reachable: bool,
     loop_scope: &mut LoopScopes,
     function_table: &mut FunctionsTable,
     symtable: &mut Symtable,
     ns: &mut Namespace,
 ) -> (YulBlock, bool) {
-    function_table.new_scope();
-    symtable.new_scope();
+    function_table.enter_scope();
+    context.enter_scope();
 
     let (body, mut next_reachable) = process_statements(
         statements,
@@ -36,7 +39,7 @@ pub fn resolve_yul_block(
     );
 
     next_reachable &= reachable;
-    symtable.leave_scope();
+    context.leave_scope(symtable, *loc);
     function_table.leave_scope(ns);
 
     (
@@ -44,7 +47,7 @@ pub fn resolve_yul_block(
             loc: *loc,
             reachable,
             next_reachable,
-            body,
+            statements: body,
         },
         next_reachable,
     )
@@ -55,7 +58,7 @@ pub fn resolve_yul_block(
 /// next statement is reachable
 pub(crate) fn process_statements(
     statements: &[pt::YulStatement],
-    context: &ExprContext,
+    context: &mut ExprContext,
     mut reachable: bool,
     symtable: &mut Symtable,
     loop_scope: &mut LoopScopes,
@@ -72,10 +75,18 @@ pub(crate) fn process_statements(
 
     for item in statements {
         if let pt::YulStatement::FunctionDefinition(func_def) = item {
+            // If an error was generate while processing the function header, it is not added to the
+            // functions table, so we do not resolve its body.
+            let index = if let Some(index) = functions_table.function_index(&func_def.id.name) {
+                index
+            } else {
+                continue;
+            };
+
             if let Ok(resolved_func) =
                 resolve_function_definition(func_def, functions_table, context, ns)
             {
-                functions_table.resolved_functions.push(resolved_func);
+                functions_table.resolved_functions[index] = resolved_func;
             }
         }
     }

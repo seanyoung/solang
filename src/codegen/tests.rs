@@ -25,7 +25,6 @@ fn test_builtin_conversion() {
         ast::Builtin::MulMod,
         ast::Builtin::Keccak256,
         ast::Builtin::Origin,
-        ast::Builtin::Random,
         ast::Builtin::ReadAddress,
         ast::Builtin::ReadInt8,
         ast::Builtin::ReadInt16LE,
@@ -45,7 +44,6 @@ fn test_builtin_conversion() {
         ast::Builtin::Signature,
         ast::Builtin::SignatureVerify,
         ast::Builtin::Timestamp,
-        ast::Builtin::TombstoneDeposit,
         ast::Builtin::Value,
         ast::Builtin::WriteAddress,
         ast::Builtin::WriteInt8,
@@ -59,6 +57,10 @@ fn test_builtin_conversion() {
         ast::Builtin::WriteUint64LE,
         ast::Builtin::WriteUint128LE,
         ast::Builtin::WriteUint256LE,
+        ast::Builtin::WriteString,
+        ast::Builtin::WriteBytes,
+        ast::Builtin::ExtendTtl,
+        ast::Builtin::ExtendInstanceTtl,
     ];
 
     let output: Vec<codegen::Builtin> = vec![
@@ -81,7 +83,6 @@ fn test_builtin_conversion() {
         codegen::Builtin::MulMod,
         codegen::Builtin::Keccak256,
         codegen::Builtin::Origin,
-        codegen::Builtin::Random,
         codegen::Builtin::ReadFromBuffer,
         codegen::Builtin::ReadFromBuffer,
         codegen::Builtin::ReadFromBuffer,
@@ -101,7 +102,6 @@ fn test_builtin_conversion() {
         codegen::Builtin::Signature,
         codegen::Builtin::SignatureVerify,
         codegen::Builtin::Timestamp,
-        codegen::Builtin::TombstoneDeposit,
         codegen::Builtin::Value,
         codegen::Builtin::WriteAddress,
         codegen::Builtin::WriteInt8,
@@ -115,6 +115,10 @@ fn test_builtin_conversion() {
         codegen::Builtin::WriteUint64LE,
         codegen::Builtin::WriteUint128LE,
         codegen::Builtin::WriteUint256LE,
+        codegen::Builtin::WriteBytes,
+        codegen::Builtin::WriteBytes,
+        codegen::Builtin::ExtendTtl,
+        codegen::Builtin::ExtendInstanceTtl,
     ];
 
     for (i, item) in input.iter().enumerate() {

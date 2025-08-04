@@ -1,21 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
+    annotions_not_allowed,
     ast::{
-        Diagnostic, Expression, Function, Namespace, Parameter, Statement, StructType, Symbol,
-        Type, Variable,
+        Diagnostic, Expression, Function, Mapping, Namespace, Parameter, Statement, StructType,
+        Symbol, Type, Variable,
     },
     contracts::is_base,
     diagnostics::Diagnostics,
-    expression::{expression, ExprContext, ResolveTo},
-    symtable::Symtable,
-    symtable::{VariableInitializer, VariableUsage},
+    expression::{ExprContext, ResolveTo},
+    symtable::{Symtable, VariableInitializer, VariableUsage},
     tags::resolve_tags,
+    ContractDefinition,
 };
+use crate::sema::expression::resolve_expression::expression;
+use crate::sema::namespace::ResolveTypeContext;
+use crate::Target;
 use solang_parser::{
-    doccomment::{parse_doccomments, DocComment},
+    doccomment::DocComment,
     pt::{self, CodeLocation, OptionalCodeLocation},
 };
+use std::sync::Arc;
 
 pub struct DelayedResolveInitializer<'a> {
     var_no: usize,
@@ -24,50 +29,36 @@ pub struct DelayedResolveInitializer<'a> {
 }
 
 pub fn contract_variables<'a>(
-    def: &'a pt::ContractDefinition,
-    comments: &[pt::Comment],
+    def: &'a ContractDefinition,
     file_no: usize,
-    contract_no: usize,
     ns: &mut Namespace,
 ) -> Vec<DelayedResolveInitializer<'a>> {
-    let mut symtable = Symtable::new();
+    let mut symtable = Symtable::default();
     let mut delayed = Vec::new();
-    let mut doc_comment_start = def.loc.start();
 
     for part in &def.parts {
-        match part {
-            pt::ContractPart::VariableDefinition(ref s) => {
-                let tags = parse_doccomments(comments, doc_comment_start, s.loc.start());
+        if let pt::ContractPart::VariableDefinition(ref s) = &part.part {
+            annotions_not_allowed(&part.annotations, "variable", ns);
 
-                if let Some(delay) = variable_decl(
-                    Some(def),
-                    s,
-                    file_no,
-                    &tags,
-                    Some(contract_no),
-                    ns,
-                    &mut symtable,
-                ) {
-                    delayed.push(delay);
-                }
+            if let Some(delay) = variable_decl(
+                Some(def),
+                s,
+                file_no,
+                &part.doccomments,
+                Some(def.contract_no),
+                ns,
+                &mut symtable,
+            ) {
+                delayed.push(delay);
             }
-            pt::ContractPart::FunctionDefinition(f) => {
-                if let Some(pt::Statement::Block { loc, .. }) = &f.body {
-                    doc_comment_start = loc.end();
-                    continue;
-                }
-            }
-            _ => (),
         }
-
-        doc_comment_start = part.loc().end();
     }
 
     delayed
 }
 
 pub fn variable_decl<'a>(
-    contract: Option<&pt::ContractDefinition>,
+    contract: Option<&ContractDefinition>,
     def: &'a pt::VariableDefinition,
     file_no: usize,
     tags: &[DocComment],
@@ -128,7 +119,13 @@ pub fn variable_decl<'a>(
 
     let mut diagnostics = Diagnostics::default();
 
-    let ty = match ns.resolve_type(file_no, contract_no, false, &ty, &mut diagnostics) {
+    let ty = match ns.resolve_type(
+        file_no,
+        contract_no,
+        ResolveTypeContext::None,
+        &ty,
+        &mut diagnostics,
+    ) {
         Ok(s) => s,
         Err(()) => {
             ns.diagnostics.extend(diagnostics);
@@ -140,6 +137,7 @@ pub fn variable_decl<'a>(
     let mut visibility: Option<pt::Visibility> = None;
     let mut has_immutable: Option<pt::Loc> = None;
     let mut is_override: Option<(pt::Loc, Vec<usize>)> = None;
+    let mut storage_type: Option<pt::StorageType> = None;
 
     for attr in attrs {
         match &attr {
@@ -184,14 +182,14 @@ pub fn variable_decl<'a>(
                             if list.contains(&no) {
                                 diagnostics.push(Diagnostic::error(
                                     name.loc,
-                                    format!("duplicate override '{}'", name),
+                                    format!("duplicate override '{name}'"),
                                 ));
                             } else if !is_base(no, contract_no, ns) {
                                 diagnostics.push(Diagnostic::error(
                                     name.loc,
                                     format!(
                                         "override '{}' is not a base contract of '{}'",
-                                        name, ns.contracts[contract_no].name
+                                        name, ns.contracts[contract_no].id
                                     ),
                                 ));
                             } else {
@@ -212,8 +210,8 @@ pub fn variable_decl<'a>(
             }
             pt::VariableAttribute::Visibility(v) if contract_no.is_none() => {
                 ns.diagnostics.push(Diagnostic::error(
-                    v.loc().unwrap(),
-                    format!("'{}': global variable cannot have visibility specifier", v),
+                    v.loc_opt().unwrap(),
+                    format!("'{v}': global variable cannot have visibility specifier"),
                 ));
                 return None;
             }
@@ -227,17 +225,50 @@ pub fn variable_decl<'a>(
             pt::VariableAttribute::Visibility(v) => {
                 if let Some(e) = &visibility {
                     ns.diagnostics.push(Diagnostic::error_with_note(
-                        v.loc().unwrap(),
-                        format!("variable visibility redeclared '{}'", v),
-                        e.loc().unwrap(),
-                        format!("location of previous declaration of '{}'", e),
+                        v.loc_opt().unwrap(),
+                        format!("variable visibility redeclared '{v}'"),
+                        e.loc_opt().unwrap(),
+                        format!("location of previous declaration of '{e}'"),
                     ));
                     return None;
                 }
 
                 visibility = Some(v.clone());
             }
+            pt::VariableAttribute::StorageType(s) => {
+                if storage_type.is_some() {
+                    ns.diagnostics.push(Diagnostic::error(
+                        attr.loc(),
+                        format!(
+                            "mutliple storage type specifiers for '{}'",
+                            def.name.as_ref().unwrap().name
+                        ),
+                    ));
+                } else {
+                    storage_type = Some(s.clone());
+                }
+            }
         }
+    }
+
+    if ns.target == Target::Soroban {
+        if storage_type.is_none() {
+            ns.diagnostics.push(Diagnostic::warning(
+                def.loc,
+                format!(
+                    "storage type not specified for `{}`, defaulting to `persistent`",
+                    def.name.as_ref().unwrap().name
+                ),
+            ));
+        }
+    } else if storage_type.is_some() {
+        ns.diagnostics.push(Diagnostic::warning(
+            def.loc,
+            format!(
+                "variable `{}`: storage types are only valid for Soroban targets",
+                def.name.as_ref().unwrap().name
+            ),
+        ));
     }
 
     if let Some(loc) = &has_immutable {
@@ -269,11 +300,16 @@ pub fn variable_decl<'a>(
         if matches!(contract.ty, pt::ContractTy::Interface(_))
             || (matches!(contract.ty, pt::ContractTy::Library(_)) && !constant)
         {
+            if contract.name.is_none() || def.name.is_none() {
+                return None;
+            }
             ns.diagnostics.push(Diagnostic::error(
                 def.loc,
                 format!(
                     "{} '{}' is not allowed to have contract variable '{}'",
-                    contract.ty, contract.name.name, def.name.name
+                    contract.ty,
+                    contract.name.as_ref().unwrap().name,
+                    def.name.as_ref().unwrap().name
                 ),
             ));
             return None;
@@ -303,10 +339,7 @@ pub fn variable_decl<'a>(
     {
         ns.diagnostics.push(Diagnostic::error(
             def.ty.loc(),
-            format!(
-                "variable of type internal function cannot be '{}'",
-                visibility
-            ),
+            format!("variable of type internal function cannot be '{visibility}'"),
         ));
         return None;
     } else if let Some(ty) = ty.contains_builtins(ns, &StructType::AccountInfo) {
@@ -321,21 +354,21 @@ pub fn variable_decl<'a>(
         return None;
     }
 
+    let mut diagnostics = Diagnostics::default();
+
     let initializer = if constant {
         if let Some(initializer) = &def.initializer {
-            let mut diagnostics = Diagnostics::default();
-            let context = ExprContext {
+            let mut context = ExprContext {
                 file_no,
-                unchecked: false,
                 contract_no,
-                function_no: None,
                 constant,
-                lvalue: false,
-                yul_function: false,
+                ..Default::default()
             };
+            context.enter_scope();
+
             match expression(
                 initializer,
-                &context,
+                &mut context,
                 ns,
                 symtable,
                 &mut diagnostics,
@@ -344,20 +377,17 @@ pub fn variable_decl<'a>(
                 Ok(res) => {
                     // implicitly conversion to correct ty
                     match res.cast(&def.loc, &ty, true, ns, &mut diagnostics) {
-                        Ok(res) => Some(res),
-                        Err(_) => {
-                            ns.diagnostics.extend(diagnostics);
-                            None
+                        Ok(res) => {
+                            res.check_constant_overflow(&mut diagnostics);
+                            Some(res)
                         }
+                        Err(_) => None,
                     }
                 }
-                Err(()) => {
-                    ns.diagnostics.extend(diagnostics);
-                    None
-                }
+                Err(()) => None,
             }
         } else {
-            ns.diagnostics.push(Diagnostic::decl_error(
+            diagnostics.push(Diagnostic::decl_error(
                 def.loc,
                 "missing initializer for constant".to_string(),
             ));
@@ -368,18 +398,12 @@ pub fn variable_decl<'a>(
         None
     };
 
-    let bases = if let Some(contract) = contract {
-        contract
-            .base
-            .iter()
-            .map(|base| format!("{}", base.name))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    ns.diagnostics.extend(diagnostics);
+
+    let bases = contract_no.map(|contract_no| ns.contract_bases(contract_no));
 
     let tags = resolve_tags(
-        def.name.loc.file_no(),
+        def.name.as_ref().unwrap().loc.file_no(),
         if contract_no.is_none() {
             "global variable"
         } else {
@@ -388,12 +412,12 @@ pub fn variable_decl<'a>(
         tags,
         None,
         None,
-        Some(&bases),
+        bases,
         ns,
     );
 
     let sdecl = Variable {
-        name: def.name.name.to_string(),
+        name: def.name.as_ref().unwrap().name.to_string(),
         loc: def.loc,
         tags,
         visibility: visibility.clone(),
@@ -403,6 +427,7 @@ pub fn variable_decl<'a>(
         assigned: def.initializer.is_some(),
         initializer,
         read: matches!(visibility, pt::Visibility::Public(_)),
+        storage_type,
     };
 
     let var_no = if let Some(contract_no) = contract_no {
@@ -432,7 +457,7 @@ pub fn variable_decl<'a>(
     let success = ns.add_symbol(
         file_no,
         contract_no,
-        &def.name,
+        def.name.as_ref().unwrap(),
         Symbol::Variable(def.loc, contract_no, var_no),
     );
 
@@ -441,28 +466,38 @@ pub fn variable_decl<'a>(
         if let Some(contract_no) = contract_no {
             // The accessor function returns the value of the storage variable, constant or not.
             let mut expr = if constant {
-                Expression::ConstantVariable(
-                    pt::Loc::Implicit,
-                    ty.clone(),
-                    Some(contract_no),
+                Expression::ConstantVariable {
+                    loc: pt::Loc::Implicit,
+                    ty: ty.clone(),
+                    contract_no: Some(contract_no),
                     var_no,
-                )
+                }
             } else {
-                Expression::StorageVariable(
-                    pt::Loc::Implicit,
-                    Type::StorageRef(false, Box::new(ty.clone())),
+                Expression::StorageVariable {
+                    loc: pt::Loc::Implicit,
+                    ty: Type::StorageRef(false, Box::new(ty.clone())),
                     contract_no,
                     var_no,
-                )
+                }
             };
 
             // If the variable is an array or mapping, the accessor function takes mapping keys
             // or array indices as arguments, and returns the dereferenced value
-            let mut symtable = Symtable::new();
+            let mut symtable = Symtable::default();
+            let mut context = ExprContext::default();
+            context.enter_scope();
             let mut params = Vec::new();
-            let ty = collect_parameters(&ty, &mut symtable, &mut params, &mut expr, ns);
+            let param = collect_parameters(
+                &ty,
+                &def.name,
+                &mut symtable,
+                &mut context,
+                &mut params,
+                &mut expr,
+                ns,
+            )?;
 
-            if ty.contains_mapping(ns) {
+            if param.ty.contains_mapping(ns) {
                 // we can't return a mapping
                 ns.diagnostics.push(Diagnostic::decl_error(
                     def.loc,
@@ -470,37 +505,25 @@ pub fn variable_decl<'a>(
                 ));
             }
 
+            let (body, returns) =
+                accessor_body(expr, param, constant, &mut symtable, &mut context, ns);
+
             let mut func = Function::new(
-                def.name.loc,
-                def.name.name.to_owned(),
+                def.name.as_ref().unwrap().loc,
+                def.name.as_ref().unwrap().loc,
+                def.name.as_ref().unwrap().clone(),
                 Some(contract_no),
                 Vec::new(),
                 pt::FunctionTy::Function,
                 // accessors for constant variables have view mutability
-                Some(pt::Mutability::View(def.name.loc)),
-                visibility,
+                Some(pt::Mutability::View(def.name.as_ref().unwrap().loc)),
+                pt::Visibility::External(None),
                 params,
-                vec![Parameter {
-                    id: None,
-                    loc: def.name.loc,
-                    ty: ty.clone(),
-                    ty_loc: Some(def.ty.loc()),
-                    indexed: false,
-                    readonly: false,
-                    recursive: false,
-                }],
+                returns,
                 ns,
             );
 
-            // Create the implicit body - just return the value
-            func.body = vec![Statement::Return(
-                pt::Loc::Implicit,
-                Some(if constant {
-                    expr
-                } else {
-                    Expression::StorageLoad(pt::Loc::Implicit, ty.clone(), Box::new(expr))
-                }),
-            )];
+            func.body = body;
             func.is_accessor = true;
             func.has_body = true;
             func.is_override = is_override;
@@ -520,7 +543,7 @@ pub fn variable_decl<'a>(
                 (
                     def.loc.file_no(),
                     Some(contract_no),
-                    def.name.name.to_owned(),
+                    def.name.as_ref().unwrap().name.to_owned(),
                 ),
                 symbol,
             );
@@ -531,55 +554,71 @@ pub fn variable_decl<'a>(
 }
 
 /// For accessor functions, create the parameter list and the return expression
-fn collect_parameters<'a>(
-    ty: &'a Type,
+fn collect_parameters(
+    ty: &Type,
+    name: &Option<pt::Identifier>,
     symtable: &mut Symtable,
-    params: &mut Vec<Parameter>,
+    context: &mut ExprContext,
+    params: &mut Vec<Parameter<Type>>,
     expr: &mut Expression,
     ns: &mut Namespace,
-) -> &'a Type {
+) -> Option<Parameter<Type>> {
     match ty {
-        Type::Mapping(key, value) => {
+        Type::Mapping(Mapping {
+            key,
+            key_name,
+            value,
+            value_name,
+        }) => {
             let map = (*expr).clone();
 
-            let id = pt::Identifier {
-                loc: pt::Loc::Implicit,
-                name: "".to_owned(),
+            let id = if let Some(name) = &key_name {
+                name.clone()
+            } else {
+                pt::Identifier {
+                    loc: pt::Loc::Implicit,
+                    name: String::new(),
+                }
             };
             let arg_ty = key.as_ref().clone();
 
-            let arg_no = symtable
-                .add(
-                    &id,
-                    arg_ty.clone(),
-                    ns,
-                    VariableInitializer::Solidity(None),
-                    VariableUsage::Parameter,
-                    None,
-                )
-                .unwrap();
+            let arg_no = symtable.add(
+                &id,
+                arg_ty.clone(),
+                ns,
+                VariableInitializer::Solidity(None),
+                VariableUsage::Parameter,
+                None,
+                context,
+            )?;
 
             symtable.arguments.push(Some(arg_no));
 
-            *expr = Expression::Subscript(
-                pt::Loc::Implicit,
-                ty.storage_array_elem(),
-                Type::StorageRef(false, Box::new(ty.clone())),
-                Box::new(map),
-                Box::new(Expression::Variable(pt::Loc::Implicit, arg_ty, arg_no)),
-            );
+            *expr = Expression::Subscript {
+                loc: pt::Loc::Implicit,
+                ty: ty.storage_array_elem(),
+                array_ty: Type::StorageRef(false, Box::new(ty.clone())),
+                array: Box::new(map),
+                index: Box::new(Expression::Variable {
+                    loc: pt::Loc::Implicit,
+                    ty: arg_ty,
+                    var_no: arg_no,
+                }),
+            };
 
             params.push(Parameter {
-                id: Some(id),
+                id: key_name.clone(),
                 loc: pt::Loc::Implicit,
                 ty: key.as_ref().clone(),
                 ty_loc: None,
                 indexed: false,
                 readonly: false,
+                infinite_size: false,
                 recursive: false,
+                annotation: None,
             });
 
-            collect_parameters(value, symtable, params, expr, ns)
+            collect_parameters(value, value_name, symtable, context, params, expr, ns)
         }
         Type::Array(elem_ty, dims) => {
             let mut ty = Type::StorageRef(false, Box::new(ty.clone()));
@@ -600,22 +639,23 @@ fn collect_parameters<'a>(
                         VariableInitializer::Solidity(None),
                         VariableUsage::Parameter,
                         None,
+                        context,
                     )
                     .unwrap();
 
                 symtable.arguments.push(Some(var_no));
 
-                *expr = Expression::Subscript(
-                    pt::Loc::Implicit,
-                    ty.storage_array_elem(),
-                    ty.clone(),
-                    Box::new(map),
-                    Box::new(Expression::Variable(
-                        pt::Loc::Implicit,
-                        Type::Uint(256),
+                *expr = Expression::Subscript {
+                    loc: pt::Loc::Implicit,
+                    ty: ty.storage_array_elem(),
+                    array_ty: ty.clone(),
+                    array: Box::new(map),
+                    index: Box::new(Expression::Variable {
+                        loc: pt::Loc::Implicit,
+                        ty: Type::Uint(256),
                         var_no,
-                    )),
-                );
+                    }),
+                };
 
                 ty = ty.storage_array_elem();
 
@@ -626,13 +666,152 @@ fn collect_parameters<'a>(
                     ty_loc: None,
                     indexed: false,
                     readonly: false,
+                    infinite_size: false,
                     recursive: false,
+                    annotation: None,
                 });
             }
 
-            collect_parameters(elem_ty, symtable, params, expr, ns)
+            collect_parameters(elem_ty, &None, symtable, context, params, expr, ns)
         }
-        _ => ty,
+        _ => Some(Parameter {
+            id: name.clone(),
+            loc: if let Some(name) = name {
+                name.loc
+            } else {
+                pt::Loc::Implicit
+            },
+            ty: ty.clone(),
+            ty_loc: None,
+            indexed: false,
+            readonly: false,
+            infinite_size: false,
+            recursive: false,
+            annotation: None,
+        }),
+    }
+}
+
+/// Build up an ast for the implict accessor function for public state variables.
+fn accessor_body(
+    expr: Expression,
+    param: Parameter<Type>,
+    constant: bool,
+    symtable: &mut Symtable,
+    context: &mut ExprContext,
+    ns: &mut Namespace,
+) -> (Vec<Statement>, Vec<Parameter<Type>>) {
+    // This could be done in codegen rather than sema, however I am not sure how we would implement
+    // that. After building up the parameter/returns list for the implicit function, we have done almost
+    // all the work already for building the body (see `expr` and `param` above). So, we would need to
+    // share some code between codegen and sema for this.
+
+    let mut ty = param.ty.clone();
+
+    // If the return value of an accessor function is a struct, return the members rather than
+    // the struct. This is a particular inconsistency in Solidity which does not apply recursively,
+    // i.e. if the struct contains structs, then those values are returned as structs.
+    if let Type::Struct(str) = &param.ty {
+        let expr = Arc::new(expr);
+
+        if !constant {
+            ty = Type::StorageRef(false, ty.into());
+        }
+
+        let var_no = symtable
+            .add(
+                &pt::Identifier {
+                    loc: pt::Loc::Implicit,
+                    name: "_".into(),
+                },
+                ty.clone(),
+                ns,
+                VariableInitializer::Solidity(Some(expr.clone())),
+                VariableUsage::LocalVariable,
+                Some(pt::StorageLocation::Storage(pt::Loc::Implicit)),
+                context,
+            )
+            .unwrap();
+
+        symtable.vars[&var_no].read = true;
+        symtable.vars[&var_no].assigned = true;
+
+        let def = str.definition(ns);
+        let returns = def.fields.clone();
+
+        let list = if constant {
+            def.fields
+                .iter()
+                .enumerate()
+                .map(|(field, param)| Expression::Load {
+                    loc: pt::Loc::Implicit,
+                    ty: param.ty.clone(),
+                    expr: Expression::StructMember {
+                        loc: pt::Loc::Implicit,
+                        ty: Type::Ref(def.fields[field].ty.clone().into()),
+                        expr: Expression::Variable {
+                            loc: pt::Loc::Implicit,
+                            ty: ty.clone(),
+                            var_no,
+                        }
+                        .into(),
+                        field,
+                    }
+                    .into(),
+                })
+                .collect()
+        } else {
+            def.fields
+                .iter()
+                .enumerate()
+                .map(|(field, param)| Expression::StorageLoad {
+                    loc: pt::Loc::Implicit,
+                    ty: param.ty.clone(),
+                    expr: Expression::StructMember {
+                        loc: pt::Loc::Implicit,
+                        ty: Type::StorageRef(false, def.fields[field].ty.clone().into()),
+                        expr: Expression::Variable {
+                            loc: pt::Loc::Implicit,
+                            ty: ty.clone(),
+                            var_no,
+                        }
+                        .into(),
+                        field,
+                    }
+                    .into(),
+                })
+                .collect()
+        };
+
+        let body = vec![
+            Statement::VariableDecl(pt::Loc::Implicit, var_no, param, Some(expr)),
+            Statement::Return(
+                pt::Loc::Implicit,
+                Some(Expression::List {
+                    loc: pt::Loc::Implicit,
+                    list,
+                }),
+            ),
+        ];
+
+        (body, returns)
+    } else {
+        let body = vec![Statement::Return(
+            pt::Loc::Implicit,
+            Some(if constant {
+                expr
+            } else {
+                Expression::StorageLoad {
+                    loc: pt::Loc::Implicit,
+                    ty,
+                    expr: Box::new(expr),
+                }
+            }),
+        )];
+
+        let returns = vec![param];
+
+        (body, returns)
     }
 }
 
@@ -641,7 +820,7 @@ pub fn resolve_initializers(
     file_no: usize,
     ns: &mut Namespace,
 ) {
-    let mut symtable = Symtable::new();
+    let mut symtable = Symtable::default();
     let mut diagnostics = Diagnostics::default();
 
     for DelayedResolveInitializer {
@@ -653,25 +832,23 @@ pub fn resolve_initializers(
         let var = &ns.contracts[*contract_no].variables[*var_no];
         let ty = var.ty.clone();
 
-        let context = ExprContext {
+        let mut context = ExprContext {
             file_no,
-            unchecked: false,
             contract_no: Some(*contract_no),
-            function_no: None,
-            constant: false,
-            lvalue: false,
-            yul_function: false,
+            ..Default::default()
         };
+        context.enter_scope();
 
         if let Ok(res) = expression(
             initializer,
-            &context,
+            &mut context,
             ns,
             &mut symtable,
             &mut diagnostics,
             ResolveTo::Type(&ty),
         ) {
             if let Ok(res) = res.cast(&initializer.loc(), &ty, true, ns, &mut diagnostics) {
+                res.check_constant_overflow(&mut diagnostics);
                 ns.contracts[*contract_no].variables[*var_no].initializer = Some(res);
             }
         }

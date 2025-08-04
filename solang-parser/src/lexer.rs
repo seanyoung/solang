@@ -1,26 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//
-// Solidity custom lexer. Solidity needs a custom lexer for two reasons:
-//  - comments and doc comments
-//  - pragma value is [^;]+
-//
+//! Custom Solidity lexer.
+//!
+//! Solidity needs a custom lexer for two reasons:
+//!  - comments and doc comments
+//!  - pragma value is [^;]+
+
+use crate::pt::{Comment, Loc};
 use itertools::{peek_nth, PeekNth};
 use phf::phf_map;
 use std::{fmt, str::CharIndices};
+use thiserror::Error;
 use unicode_xid::UnicodeXID;
 
-use crate::pt::{CodeLocation, Comment, Loc};
+/// A spanned [Token].
+pub type Spanned<'a> = (usize, Token<'a>, usize);
 
-pub type Spanned<Token, Loc, Error> = Result<(Loc, Token, Loc), Error>;
+/// [Lexer]'s Result type.
+pub type Result<'a, T = Spanned<'a>, E = LexicalError> = std::result::Result<T, E>;
 
+/// A Solidity lexical token. Produced by [Lexer].
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[allow(missing_docs)]
 pub enum Token<'input> {
     Identifier(&'input str),
+    /// `(unicode, literal)`
     StringLiteral(bool, &'input str),
     AddressLiteral(&'input str),
     HexLiteral(&'input str),
+    /// `(number, exponent)`
     Number(&'input str, &'input str),
+    /// `(number, fraction, exponent)`
     RationalNumber(&'input str, &'input str, &'input str),
     HexNumber(&'input str),
     Divide,
@@ -33,7 +43,6 @@ pub enum Token<'input> {
 
     Struct,
     Event,
-    Error,
     Enum,
     Type,
 
@@ -140,7 +149,7 @@ pub enum Token<'input> {
     Colon,
     OpenBracket,
     CloseBracket,
-    Complement,
+    BitwiseNot,
     Question,
 
     Mapping,
@@ -152,16 +161,6 @@ pub enum Token<'input> {
     Receive,
     Fallback,
 
-    Seconds,
-    Minutes,
-    Hours,
-    Days,
-    Weeks,
-    Gwei,
-    Wei,
-    Ether,
-
-    This,
     As,
     Is,
     Abstract,
@@ -179,28 +178,35 @@ pub enum Token<'input> {
     Case,
     Default,
     YulArrow,
+
+    // Storage types for Soroban
+    Persistent,
+    Temporary,
+    Instance,
+
+    Annotation(&'input str),
 }
 
-impl<'input> fmt::Display for Token<'input> {
+impl fmt::Display for Token<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Token::Identifier(id) => write!(f, "{}", id),
-            Token::StringLiteral(false, s) => write!(f, "\"{}\"", s),
-            Token::StringLiteral(true, s) => write!(f, "unicode\"{}\"", s),
-            Token::HexLiteral(hex) => write!(f, "{}", hex),
-            Token::AddressLiteral(address) => write!(f, "{}", address),
-            Token::Number(integer, exp) if exp.is_empty() => write!(f, "{}", integer),
-            Token::Number(integer, exp) => write!(f, "{}e{}", integer, exp),
-            Token::RationalNumber(integer, fraction, exp) if exp.is_empty() => {
-                write!(f, "{}.{}", integer, fraction)
+            Token::Identifier(id) => write!(f, "{id}"),
+            Token::StringLiteral(false, s) => write!(f, "\"{s}\""),
+            Token::StringLiteral(true, s) => write!(f, "unicode\"{s}\""),
+            Token::HexLiteral(hex) => write!(f, "{hex}"),
+            Token::AddressLiteral(address) => write!(f, "{address}"),
+            Token::Number(integer, "") => write!(f, "{integer}"),
+            Token::Number(integer, exp) => write!(f, "{integer}e{exp}"),
+            Token::RationalNumber(integer, fraction, "") => {
+                write!(f, "{integer}.{fraction}")
             }
             Token::RationalNumber(integer, fraction, exp) => {
-                write!(f, "{}.{}e{}", integer, fraction, exp)
+                write!(f, "{integer}.{fraction}e{exp}")
             }
-            Token::HexNumber(n) => write!(f, "{}", n),
-            Token::Uint(w) => write!(f, "uint{}", w),
-            Token::Int(w) => write!(f, "int{}", w),
-            Token::Bytes(w) => write!(f, "bytes{}", w),
+            Token::HexNumber(n) => write!(f, "{n}"),
+            Token::Uint(w) => write!(f, "uint{w}"),
+            Token::Int(w) => write!(f, "int{w}"),
+            Token::Bytes(w) => write!(f, "bytes{w}"),
             Token::Byte => write!(f, "byte"),
             Token::DynamicBytes => write!(f, "bytes"),
             Token::Semicolon => write!(f, ";"),
@@ -243,10 +249,10 @@ impl<'input> fmt::Display for Token<'input> {
             Token::Colon => write!(f, ":"),
             Token::OpenBracket => write!(f, "["),
             Token::CloseBracket => write!(f, "]"),
-            Token::Complement => write!(f, "~"),
+            Token::BitwiseNot => write!(f, "~"),
             Token::Question => write!(f, "?"),
-            Token::ShiftRightAssign => write!(f, "<<="),
-            Token::ShiftRight => write!(f, "<<"),
+            Token::ShiftRightAssign => write!(f, ">>="),
+            Token::ShiftRight => write!(f, ">>"),
             Token::Less => write!(f, "<"),
             Token::LessEqual => write!(f, "<="),
             Token::Bool => write!(f, "bool"),
@@ -260,7 +266,6 @@ impl<'input> fmt::Display for Token<'input> {
             Token::Import => write!(f, "import"),
             Token::Struct => write!(f, "struct"),
             Token::Event => write!(f, "event"),
-            Token::Error => write!(f, "error"),
             Token::Enum => write!(f, "enum"),
             Token::Type => write!(f, "type"),
             Token::Memory => write!(f, "memory"),
@@ -299,15 +304,6 @@ impl<'input> fmt::Display for Token<'input> {
             Token::Catch => write!(f, "catch"),
             Token::Receive => write!(f, "receive"),
             Token::Fallback => write!(f, "fallback"),
-            Token::Seconds => write!(f, "seconds"),
-            Token::Minutes => write!(f, "minutes"),
-            Token::Hours => write!(f, "hours"),
-            Token::Days => write!(f, "days"),
-            Token::Weeks => write!(f, "weeks"),
-            Token::Gwei => write!(f, "gwei"),
-            Token::Wei => write!(f, "wei"),
-            Token::Ether => write!(f, "ether"),
-            Token::This => write!(f, "this"),
             Token::As => write!(f, "as"),
             Token::Is => write!(f, "is"),
             Token::Abstract => write!(f, "abstract"),
@@ -324,64 +320,81 @@ impl<'input> fmt::Display for Token<'input> {
             Token::Case => write!(f, "case"),
             Token::Default => write!(f, "default"),
             Token::YulArrow => write!(f, "->"),
+            Token::Annotation(name) => write!(f, "@{name}"),
+            Token::Persistent => write!(f, "persistent"),
+            Token::Temporary => write!(f, "temporary"),
+            Token::Instance => write!(f, "instance"),
         }
     }
 }
 
+/// Custom Solidity lexer.
+///
+/// # Examples
+///
+/// ```
+/// use solang_parser::lexer::{Lexer, Token};
+///
+/// let source = "uint256 number = 0;";
+/// let mut comments = Vec::new();
+/// let mut errors = Vec::new();
+/// let mut lexer = Lexer::new(source, 0, &mut comments, &mut errors);
+///
+/// let mut next_token = || lexer.next().map(|(_, token, _)| token);
+/// assert_eq!(next_token(), Some(Token::Uint(256)));
+/// assert_eq!(next_token(), Some(Token::Identifier("number")));
+/// assert_eq!(next_token(), Some(Token::Assign));
+/// assert_eq!(next_token(), Some(Token::Number("0", "")));
+/// assert_eq!(next_token(), Some(Token::Semicolon));
+/// assert_eq!(next_token(), None);
+/// assert!(errors.is_empty());
+/// assert!(comments.is_empty());
+/// ```
+#[derive(Debug)]
 pub struct Lexer<'input> {
     input: &'input str,
     chars: PeekNth<CharIndices<'input>>,
     comments: &'input mut Vec<Comment>,
     file_no: usize,
+    /// While parsing version semver, do not parse rational numbers
+    parse_semver: bool,
     last_tokens: [Option<Token<'input>>; 2],
+    /// The mutable reference to the error vector.
+    pub errors: &'input mut Vec<LexicalError>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// An error thrown by [Lexer].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[allow(missing_docs)]
 pub enum LexicalError {
+    #[error("end of file found in comment")]
     EndOfFileInComment(Loc),
+
+    #[error("end of file found in string literal")]
     EndOfFileInString(Loc),
+
+    #[error("end of file found in hex literal string")]
     EndofFileInHex(Loc),
+
+    #[error("missing number")]
     MissingNumber(Loc),
+
+    #[error("invalid character '{1}' in hex literal string")]
     InvalidCharacterInHexLiteral(Loc, char),
+
+    #[error("unrecognised token '{1}'")]
     UnrecognisedToken(Loc, String),
+
+    #[error("missing exponent")]
     MissingExponent(Loc),
+
+    #[error("'{1}' found where 'from' expected")]
     ExpectedFrom(Loc, String),
 }
 
-impl fmt::Display for LexicalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LexicalError::EndOfFileInComment(..) => write!(f, "end of file found in comment"),
-            LexicalError::EndOfFileInString(..) => {
-                write!(f, "end of file found in string literal")
-            }
-            LexicalError::EndofFileInHex(..) => {
-                write!(f, "end of file found in hex literal string")
-            }
-            LexicalError::MissingNumber(..) => write!(f, "missing number"),
-            LexicalError::InvalidCharacterInHexLiteral(_, ch) => {
-                write!(f, "invalid character '{}' in hex literal string", ch)
-            }
-            LexicalError::UnrecognisedToken(_, t) => write!(f, "unrecognised token '{}'", t),
-            LexicalError::ExpectedFrom(_, t) => write!(f, "'{}' found where 'from' expected", t),
-            LexicalError::MissingExponent(..) => write!(f, "missing number"),
-        }
-    }
-}
-
-impl CodeLocation for LexicalError {
-    fn loc(&self) -> Loc {
-        match self {
-            LexicalError::EndOfFileInComment(loc, ..)
-            | LexicalError::EndOfFileInString(loc, ..)
-            | LexicalError::EndofFileInHex(loc, ..)
-            | LexicalError::MissingNumber(loc, ..)
-            | LexicalError::InvalidCharacterInHexLiteral(loc, _)
-            | LexicalError::UnrecognisedToken(loc, ..)
-            | LexicalError::ExpectedFrom(loc, ..)
-            | LexicalError::MissingExponent(loc, ..) => *loc,
-        }
-    }
+/// Returns whether `word` is a keyword in Solidity.
+pub fn is_keyword(word: &str) -> bool {
+    KEYWORDS.contains_key(word)
 }
 
 static KEYWORDS: phf::Map<&'static str, Token> = phf_map! {
@@ -436,7 +449,6 @@ static KEYWORDS: phf::Map<&'static str, Token> = phf_map! {
     "emit" => Token::Emit,
     "enum" => Token::Enum,
     "event" => Token::Event,
-    "error" => Token::Error,
     "external" => Token::External,
     "false" => Token::False,
     "for" => Token::For,
@@ -538,15 +550,6 @@ static KEYWORDS: phf::Map<&'static str, Token> = phf_map! {
     "catch" => Token::Catch,
     "receive" => Token::Receive,
     "fallback" => Token::Fallback,
-    "seconds" => Token::Seconds,
-    "minutes" => Token::Minutes,
-    "hours" => Token::Hours,
-    "days" => Token::Days,
-    "weeks" => Token::Weeks,
-    "wei" => Token::Wei,
-    "gwei" => Token::Gwei,
-    "ether" => Token::Ether,
-    "this" => Token::This,
     "as" => Token::As,
     "is" => Token::Is,
     "abstract" => Token::Abstract,
@@ -558,25 +561,42 @@ static KEYWORDS: phf::Map<&'static str, Token> = phf_map! {
     "unchecked" => Token::Unchecked,
     "assembly" => Token::Assembly,
     "let" => Token::Let,
+    "persistent" => Token::Persistent,
+    "temporary" => Token::Temporary,
+    "instance" => Token::Instance,
 };
 
 impl<'input> Lexer<'input> {
-    pub fn new(input: &'input str, file_no: usize, comments: &'input mut Vec<Comment>) -> Self {
+    /// Instantiates a new Lexer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use solang_parser::lexer::Lexer;
+    ///
+    /// let source = "uint256 number = 0;";
+    /// let mut comments = Vec::new();
+    /// let mut errors = Vec::new();
+    /// let mut lexer = Lexer::new(source, 0, &mut comments, &mut errors);
+    /// ```
+    pub fn new(
+        input: &'input str,
+        file_no: usize,
+        comments: &'input mut Vec<Comment>,
+        errors: &'input mut Vec<LexicalError>,
+    ) -> Self {
         Lexer {
             input,
             chars: peek_nth(input.char_indices()),
             comments,
             file_no,
+            parse_semver: false,
             last_tokens: [None, None],
+            errors,
         }
     }
 
-    fn parse_number(
-        &mut self,
-        start: usize,
-        end: usize,
-        ch: char,
-    ) -> Result<(usize, Token<'input>, usize), LexicalError> {
+    fn parse_number(&mut self, mut start: usize, ch: char) -> Result<'input> {
         let mut is_rational = false;
         if ch == '0' {
             if let Some((_, 'x')) = self.chars.peek() {
@@ -613,13 +633,12 @@ impl<'input> Lexer<'input> {
             }
         }
 
-        let mut start = start;
         if ch == '.' {
             is_rational = true;
             start -= 1;
         }
 
-        let mut end = end;
+        let mut end = start;
         while let Some((i, ch)) = self.chars.peek() {
             if !ch.is_ascii_digit() && *ch != '_' {
                 break;
@@ -627,11 +646,19 @@ impl<'input> Lexer<'input> {
             end = *i;
             self.chars.next();
         }
+
+        if self.parse_semver {
+            let integer = &self.input[start..=end];
+            let exp = &self.input[0..0];
+
+            return Ok((start, Token::Number(integer, exp), end + 1));
+        }
+
         let mut rational_end = end;
-        let mut end_before_rational = end;
+        let mut end_before_rational = end + 1;
         let mut rational_start = end;
         if is_rational {
-            end_before_rational = start - 1;
+            end_before_rational = start;
             rational_start = start + 1;
         }
 
@@ -660,8 +687,12 @@ impl<'input> Lexer<'input> {
         if let Some((i, 'e' | 'E')) = self.chars.peek() {
             exp_start = *i + 1;
             self.chars.next();
+            // Negative exponent
+            while matches!(self.chars.peek(), Some((_, '-'))) {
+                self.chars.next();
+            }
             while let Some((i, ch)) = self.chars.peek() {
-                if !ch.is_ascii_digit() && *ch != '_' && *ch != '-' {
+                if !ch.is_ascii_digit() && *ch != '_' {
                     break;
                 }
                 end = *i;
@@ -678,7 +709,7 @@ impl<'input> Lexer<'input> {
         }
 
         if is_rational {
-            let integer = &self.input[start..=end_before_rational];
+            let integer = &self.input[start..end_before_rational];
             let fraction = &self.input[rational_start..=rational_end];
             let exp = &self.input[exp_start..=end];
 
@@ -701,7 +732,7 @@ impl<'input> Lexer<'input> {
         token_start: usize,
         string_start: usize,
         quote_char: char,
-    ) -> Result<(usize, Token<'input>, usize), LexicalError> {
+    ) -> Result<'input> {
         let mut end;
 
         let mut last_was_escape = false;
@@ -733,26 +764,11 @@ impl<'input> Lexer<'input> {
         ))
     }
 
-    fn next(&mut self) -> Option<Result<(usize, Token<'input>, usize), LexicalError>> {
-        loop {
+    fn next(&mut self) -> Option<Spanned<'input>> {
+        'toplevel: loop {
             match self.chars.next() {
                 Some((start, ch)) if ch == '_' || ch == '$' || UnicodeXID::is_xid_start(ch) => {
-                    let end;
-
-                    loop {
-                        if let Some((i, ch)) = self.chars.peek() {
-                            if !UnicodeXID::is_xid_continue(*ch) && *ch != '$' {
-                                end = *i;
-                                break;
-                            }
-                            self.chars.next();
-                        } else {
-                            end = self.input.len();
-                            break;
-                        }
-                    }
-
-                    let id = &self.input[start..end];
+                    let (id, end) = self.match_identifier(start);
 
                     if id == "unicode" {
                         match self.chars.peek() {
@@ -760,8 +776,11 @@ impl<'input> Lexer<'input> {
                                 let quote_char = *quote_char;
 
                                 self.chars.next();
-
-                                return Some(self.string(true, start, start + 8, quote_char));
+                                let str_res = self.string(true, start, start + 8, quote_char);
+                                match str_res {
+                                    Err(lex_err) => self.errors.push(lex_err),
+                                    Ok(val) => return Some(val),
+                                }
                             }
                             _ => (),
                         }
@@ -776,11 +795,11 @@ impl<'input> Lexer<'input> {
 
                                 for (i, ch) in &mut self.chars {
                                     if ch == quote_char {
-                                        return Some(Ok((
+                                        return Some((
                                             start,
                                             Token::HexLiteral(&self.input[start..=i]),
                                             i + 1,
-                                        )));
+                                        ));
                                     }
 
                                     if !ch.is_ascii_hexdigit() && ch != '_' {
@@ -791,20 +810,22 @@ impl<'input> Lexer<'input> {
                                             }
                                         }
 
-                                        return Some(Err(
+                                        self.errors.push(
                                             LexicalError::InvalidCharacterInHexLiteral(
                                                 Loc::File(self.file_no, i, i + 1),
                                                 ch,
                                             ),
-                                        ));
+                                        );
+                                        continue 'toplevel;
                                     }
                                 }
 
-                                return Some(Err(LexicalError::EndOfFileInString(Loc::File(
+                                self.errors.push(LexicalError::EndOfFileInString(Loc::File(
                                     self.file_no,
                                     start,
                                     self.input.len(),
-                                ))));
+                                )));
+                                return None;
                             }
                             _ => (),
                         }
@@ -819,38 +840,43 @@ impl<'input> Lexer<'input> {
 
                                 for (i, ch) in &mut self.chars {
                                     if ch == quote_char {
-                                        return Some(Ok((
+                                        return Some((
                                             start,
                                             Token::AddressLiteral(&self.input[start..=i]),
                                             i + 1,
-                                        )));
+                                        ));
                                     }
                                 }
 
-                                return Some(Err(LexicalError::EndOfFileInString(Loc::File(
+                                self.errors.push(LexicalError::EndOfFileInString(Loc::File(
                                     self.file_no,
                                     start,
                                     self.input.len(),
-                                ))));
+                                )));
+                                return None;
                             }
                             _ => (),
                         }
                     }
 
                     return if let Some(w) = KEYWORDS.get(id) {
-                        Some(Ok((start, *w, end)))
+                        Some((start, *w, end))
                     } else {
-                        Some(Ok((start, Token::Identifier(id), end)))
+                        Some((start, Token::Identifier(id), end))
                     };
                 }
                 Some((start, quote_char @ '"')) | Some((start, quote_char @ '\'')) => {
-                    return Some(self.string(false, start, start + 1, quote_char));
+                    let str_res = self.string(false, start, start + 1, quote_char);
+                    match str_res {
+                        Err(lex_err) => self.errors.push(lex_err),
+                        Ok(val) => return Some(val),
+                    }
                 }
                 Some((start, '/')) => {
                     match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            return Some(Ok((start, Token::DivideAssign, start + 2)));
+                            return Some((start, Token::DivideAssign, start + 2));
                         }
                         Some((_, '/')) => {
                             // line comment
@@ -917,11 +943,12 @@ impl<'input> Lexer<'input> {
                                     seen_star = ch == '*';
                                     last = i;
                                 } else {
-                                    return Some(Err(LexicalError::EndOfFileInComment(Loc::File(
+                                    self.errors.push(LexicalError::EndOfFileInComment(Loc::File(
                                         self.file_no,
                                         start,
                                         self.input.len(),
-                                    ))));
+                                    )));
+                                    return None;
                                 }
                             }
 
@@ -939,126 +966,149 @@ impl<'input> Lexer<'input> {
                             }
                         }
                         _ => {
-                            return Some(Ok((start, Token::Divide, start + 1)));
+                            return Some((start, Token::Divide, start + 1));
                         }
                     }
                 }
                 Some((start, ch)) if ch.is_ascii_digit() => {
-                    return Some(self.parse_number(start, start, ch))
+                    let parse_result = self.parse_number(start, ch);
+                    match parse_result {
+                        Err(lex_err) => {
+                            self.errors.push(lex_err.clone());
+                            if matches!(lex_err, LexicalError::EndofFileInHex(_)) {
+                                return None;
+                            }
+                        }
+                        Ok(parse_result) => return Some(parse_result),
+                    }
                 }
-                Some((i, ';')) => return Some(Ok((i, Token::Semicolon, i + 1))),
-                Some((i, ',')) => return Some(Ok((i, Token::Comma, i + 1))),
-                Some((i, '(')) => return Some(Ok((i, Token::OpenParenthesis, i + 1))),
-                Some((i, ')')) => return Some(Ok((i, Token::CloseParenthesis, i + 1))),
-                Some((i, '{')) => return Some(Ok((i, Token::OpenCurlyBrace, i + 1))),
-                Some((i, '}')) => return Some(Ok((i, Token::CloseCurlyBrace, i + 1))),
-                Some((i, '~')) => return Some(Ok((i, Token::Complement, i + 1))),
-                Some((i, '=')) => match self.chars.peek() {
-                    Some((_, '=')) => {
-                        self.chars.next();
-                        return Some(Ok((i, Token::Equal, i + 2)));
-                    }
-                    Some((_, '>')) => {
-                        self.chars.next();
-                        return Some(Ok((i, Token::Arrow, i + 2)));
-                    }
-                    _ => {
-                        return Some(Ok((i, Token::Assign, i + 1)));
-                    }
-                },
-                Some((i, '!')) => {
-                    if let Some((_, '=')) = self.chars.peek() {
-                        self.chars.next();
-                        return Some(Ok((i, Token::NotEqual, i + 2)));
+                Some((start, '@')) => {
+                    let (id, end) = self.match_identifier(start);
+                    if id.len() == 1 {
+                        self.errors.push(LexicalError::UnrecognisedToken(
+                            Loc::File(self.file_no, start, start + 1),
+                            id.to_owned(),
+                        ));
                     } else {
-                        return Some(Ok((i, Token::Not, i + 1)));
+                        return Some((start, Token::Annotation(&id[1..]), end));
+                    };
+                }
+                Some((i, ';')) => {
+                    self.parse_semver = false;
+                    return Some((i, Token::Semicolon, i + 1));
+                }
+                Some((i, ',')) => return Some((i, Token::Comma, i + 1)),
+                Some((i, '(')) => return Some((i, Token::OpenParenthesis, i + 1)),
+                Some((i, ')')) => return Some((i, Token::CloseParenthesis, i + 1)),
+                Some((i, '{')) => return Some((i, Token::OpenCurlyBrace, i + 1)),
+                Some((i, '}')) => return Some((i, Token::CloseCurlyBrace, i + 1)),
+                Some((i, '~')) => return Some((i, Token::BitwiseNot, i + 1)),
+                Some((i, '=')) => {
+                    return match self.chars.peek() {
+                        Some((_, '=')) => {
+                            self.chars.next();
+                            Some((i, Token::Equal, i + 2))
+                        }
+                        Some((_, '>')) => {
+                            self.chars.next();
+                            Some((i, Token::Arrow, i + 2))
+                        }
+                        _ => Some((i, Token::Assign, i + 1)),
+                    }
+                }
+                Some((i, '!')) => {
+                    return if let Some((_, '=')) = self.chars.peek() {
+                        self.chars.next();
+                        Some((i, Token::NotEqual, i + 2))
+                    } else {
+                        Some((i, Token::Not, i + 1))
                     }
                 }
                 Some((i, '|')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::BitwiseOrAssign, i + 2)))
+                            Some((i, Token::BitwiseOrAssign, i + 2))
                         }
                         Some((_, '|')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::Or, i + 2)))
+                            Some((i, Token::Or, i + 2))
                         }
-                        _ => Some(Ok((i, Token::BitwiseOr, i + 1))),
+                        _ => Some((i, Token::BitwiseOr, i + 1)),
                     };
                 }
                 Some((i, '&')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::BitwiseAndAssign, i + 2)))
+                            Some((i, Token::BitwiseAndAssign, i + 2))
                         }
                         Some((_, '&')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::And, i + 2)))
+                            Some((i, Token::And, i + 2))
                         }
-                        _ => Some(Ok((i, Token::BitwiseAnd, i + 1))),
+                        _ => Some((i, Token::BitwiseAnd, i + 1)),
                     };
                 }
                 Some((i, '^')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::BitwiseXorAssign, i + 2)))
+                            Some((i, Token::BitwiseXorAssign, i + 2))
                         }
-                        _ => Some(Ok((i, Token::BitwiseXor, i + 1))),
+                        _ => Some((i, Token::BitwiseXor, i + 1)),
                     };
                 }
                 Some((i, '+')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::AddAssign, i + 2)))
+                            Some((i, Token::AddAssign, i + 2))
                         }
                         Some((_, '+')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::Increment, i + 2)))
+                            Some((i, Token::Increment, i + 2))
                         }
-                        _ => Some(Ok((i, Token::Add, i + 1))),
+                        _ => Some((i, Token::Add, i + 1)),
                     };
                 }
                 Some((i, '-')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::SubtractAssign, i + 2)))
+                            Some((i, Token::SubtractAssign, i + 2))
                         }
                         Some((_, '-')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::Decrement, i + 2)))
+                            Some((i, Token::Decrement, i + 2))
                         }
                         Some((_, '>')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::YulArrow, i + 2)))
+                            Some((i, Token::YulArrow, i + 2))
                         }
-                        _ => Some(Ok((i, Token::Subtract, i + 1))),
+                        _ => Some((i, Token::Subtract, i + 1)),
                     };
                 }
                 Some((i, '*')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::MulAssign, i + 2)))
+                            Some((i, Token::MulAssign, i + 2))
                         }
                         Some((_, '*')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::Power, i + 2)))
+                            Some((i, Token::Power, i + 2))
                         }
-                        _ => Some(Ok((i, Token::Mul, i + 1))),
+                        _ => Some((i, Token::Mul, i + 1)),
                     };
                 }
                 Some((i, '%')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::ModuloAssign, i + 2)))
+                            Some((i, Token::ModuloAssign, i + 2))
                         }
-                        _ => Some(Ok((i, Token::Modulo, i + 1))),
+                        _ => Some((i, Token::Modulo, i + 1)),
                     };
                 }
                 Some((i, '<')) => {
@@ -1067,16 +1117,16 @@ impl<'input> Lexer<'input> {
                             self.chars.next();
                             if let Some((_, '=')) = self.chars.peek() {
                                 self.chars.next();
-                                Some(Ok((i, Token::ShiftLeftAssign, i + 3)))
+                                Some((i, Token::ShiftLeftAssign, i + 3))
                             } else {
-                                Some(Ok((i, Token::ShiftLeft, i + 2)))
+                                Some((i, Token::ShiftLeft, i + 2))
                             }
                         }
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::LessEqual, i + 2)))
+                            Some((i, Token::LessEqual, i + 2))
                         }
-                        _ => Some(Ok((i, Token::Less, i + 1))),
+                        _ => Some((i, Token::Less, i + 1)),
                     };
                 }
                 Some((i, '>')) => {
@@ -1085,38 +1135,44 @@ impl<'input> Lexer<'input> {
                             self.chars.next();
                             if let Some((_, '=')) = self.chars.peek() {
                                 self.chars.next();
-                                Some(Ok((i, Token::ShiftRightAssign, i + 3)))
+                                Some((i, Token::ShiftRightAssign, i + 3))
                             } else {
-                                Some(Ok((i, Token::ShiftRight, i + 2)))
+                                Some((i, Token::ShiftRight, i + 2))
                             }
                         }
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::MoreEqual, i + 2)))
+                            Some((i, Token::MoreEqual, i + 2))
                         }
-                        _ => Some(Ok((i, Token::More, i + 1))),
+                        _ => Some((i, Token::More, i + 1)),
                     };
                 }
                 Some((i, '.')) => {
                     if let Some((_, a)) = self.chars.peek() {
-                        if a.is_ascii_digit() {
-                            return Some(self.parse_number(i + 1, i + 1, '.'));
+                        if a.is_ascii_digit() && !self.parse_semver {
+                            return match self.parse_number(i + 1, '.') {
+                                Err(lex_error) => {
+                                    self.errors.push(lex_error);
+                                    None
+                                }
+                                Ok(parse_result) => Some(parse_result),
+                            };
                         }
                     }
-                    return Some(Ok((i, Token::Member, i + 1)));
+                    return Some((i, Token::Member, i + 1));
                 }
-                Some((i, '[')) => return Some(Ok((i, Token::OpenBracket, i + 1))),
-                Some((i, ']')) => return Some(Ok((i, Token::CloseBracket, i + 1))),
+                Some((i, '[')) => return Some((i, Token::OpenBracket, i + 1)),
+                Some((i, ']')) => return Some((i, Token::CloseBracket, i + 1)),
                 Some((i, ':')) => {
                     return match self.chars.peek() {
                         Some((_, '=')) => {
                             self.chars.next();
-                            Some(Ok((i, Token::ColonAssign, i + 2)))
+                            Some((i, Token::ColonAssign, i + 2))
                         }
-                        _ => Some(Ok((i, Token::Colon, i + 1))),
+                        _ => Some((i, Token::Colon, i + 1)),
                     };
                 }
-                Some((i, '?')) => return Some(Ok((i, Token::Question, i + 1))),
+                Some((i, '?')) => return Some((i, Token::Question, i + 1)),
                 Some((_, ch)) if ch.is_whitespace() => (),
                 Some((start, _)) => {
                     let mut end;
@@ -1134,75 +1190,52 @@ impl<'input> Lexer<'input> {
                         }
                     }
 
-                    return Some(Err(LexicalError::UnrecognisedToken(
+                    self.errors.push(LexicalError::UnrecognisedToken(
                         Loc::File(self.file_no, start, end),
                         self.input[start..end].to_owned(),
-                    )));
+                    ));
                 }
                 None => return None, // End of file
             }
         }
     }
 
-    /// Next token is pragma value. Return it
-    fn pragma_value(&mut self) -> Option<Result<(usize, Token<'input>, usize), LexicalError>> {
-        // special parser for pragma solidity >=0.4.22 <0.7.0;
-        let mut start = None;
-        let mut end = 0;
-
-        // solc will include anything upto the next semicolon, whitespace
-        // trimmed on left and right
+    fn match_identifier(&mut self, start: usize) -> (&'input str, usize) {
+        let end;
         loop {
-            match self.chars.peek() {
-                Some((_, ';')) | None => {
-                    return if let Some(start) = start {
-                        Some(Ok((
-                            start,
-                            Token::StringLiteral(false, &self.input[start..end]),
-                            end,
-                        )))
-                    } else {
-                        self.next()
-                    };
+            if let Some((i, ch)) = self.chars.peek() {
+                if !UnicodeXID::is_xid_continue(*ch) && *ch != '$' {
+                    end = *i;
+                    break;
                 }
-                Some((_, ch)) if ch.is_whitespace() => {
-                    self.chars.next();
-                }
-                Some((i, _)) => {
-                    if start.is_none() {
-                        start = Some(*i);
-                    }
-                    self.chars.next();
-
-                    // end should point to the byte _after_ the character
-                    end = match self.chars.peek() {
-                        Some((i, _)) => *i,
-                        None => self.input.len(),
-                    }
-                }
+                self.chars.next();
+            } else {
+                end = self.input.len();
+                break;
             }
         }
+
+        (&self.input[start..end], end)
     }
 }
 
 impl<'input> Iterator for Lexer<'input> {
-    type Item = Spanned<Token<'input>, usize, LexicalError>;
+    type Item = Spanned<'input>;
 
-    /// Return the next token
     fn next(&mut self) -> Option<Self::Item> {
         // Lexer should be aware of whether the last two tokens were
         // pragma followed by identifier. If this is true, then special parsing should be
         // done for the pragma value
-        let token = if let [Some(Token::Pragma), Some(Token::Identifier(_))] = self.last_tokens {
-            self.pragma_value()
-        } else {
-            self.next()
-        };
+        if let [Some(Token::Pragma), Some(Token::Identifier(_))] = self.last_tokens {
+            self.parse_semver = true;
+        }
+
+        let token = self.next();
 
         self.last_tokens = [
             self.last_tokens[1],
             match token {
-                Some(Ok((_, n, _))) => Some(n),
+                Some((_, n, _)) => Some(n),
                 _ => None,
             },
         ];
@@ -1211,399 +1244,697 @@ impl<'input> Iterator for Lexer<'input> {
     }
 }
 
-#[test]
-fn lexertest() {
-    let mut comments = Vec::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let tokens = Lexer::new("bool", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+    #[test]
+    fn test_lexer() {
+        let mut comments = Vec::new();
+        let mut errors = Vec::new();
 
-    assert_eq!(tokens, vec!(Ok((0, Token::Bool, 4))));
+        let multiple_errors = r#" 9ea -9e € bool hex uint8 hex"g"   /**  "#;
+        let tokens = Lexer::new(multiple_errors, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+        assert_eq!(
+            tokens,
+            vec![
+                (3, Token::Identifier("a"), 4),
+                (5, Token::Subtract, 6),
+                (13, Token::Bool, 17),
+                (18, Token::Identifier("hex"), 21),
+                (22, Token::Uint(8), 27),
+            ]
+        );
 
-    let tokens = Lexer::new("uint8", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            errors,
+            vec![
+                LexicalError::MissingExponent(Loc::File(0, 1, 42)),
+                LexicalError::MissingExponent(Loc::File(0, 6, 42)),
+                LexicalError::UnrecognisedToken(Loc::File(0, 9, 12), '€'.to_string()),
+                LexicalError::InvalidCharacterInHexLiteral(Loc::File(0, 32, 33), 'g'),
+                LexicalError::EndOfFileInComment(Loc::File(0, 37, 42)),
+            ]
+        );
 
-    assert_eq!(tokens, vec!(Ok((0, Token::Uint(8), 5))));
+        let mut errors = Vec::new();
+        let tokens = Lexer::new("bool", 0, &mut comments, &mut errors).collect::<Vec<_>>();
 
-    let tokens = Lexer::new("hex", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, vec!((0, Token::Bool, 4)));
 
-    assert_eq!(tokens, vec!(Ok((0, Token::Identifier("hex"), 3))));
+        let tokens = Lexer::new("uint8", 0, &mut comments, &mut errors).collect::<Vec<_>>();
 
-    let tokens = Lexer::new("hex\"cafe_dead\" /* adad*** */", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, vec!((0, Token::Uint(8), 5)));
 
-    assert_eq!(
-        tokens,
-        vec!(Ok((0, Token::HexLiteral("hex\"cafe_dead\""), 14)))
-    );
+        let tokens = Lexer::new("hex", 0, &mut comments, &mut errors).collect::<Vec<_>>();
 
-    let tokens = Lexer::new("// foo bar\n0x00fead0_12 00090 0_0", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, vec!((0, Token::Identifier("hex"), 3)));
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((11, Token::HexNumber("0x00fead0_12"), 23)),
-            Ok((24, Token::Number("00090", ""), 29)),
-            Ok((30, Token::Number("0_0", ""), 33))
+        let tokens = Lexer::new(
+            "hex\"cafe_dead\" /* adad*** */",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new("// foo bar\n0x00fead0_12 9.0008 0_0", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, vec!((0, Token::HexLiteral("hex\"cafe_dead\""), 14)));
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((11, Token::HexNumber("0x00fead0_12"), 23)),
-            Ok((24, Token::RationalNumber("9", "0008", ""), 30)),
-            Ok((31, Token::Number("0_0", ""), 34))
+        let tokens = Lexer::new(
+            "// foo bar\n0x00fead0_12 00090 0_0",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new("// foo bar\n0x00fead0_12 .0008 0.9e2", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (11, Token::HexNumber("0x00fead0_12"), 23),
+                (24, Token::Number("00090", ""), 29),
+                (30, Token::Number("0_0", ""), 33)
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((11, Token::HexNumber("0x00fead0_12"), 23)),
-            Ok((24, Token::RationalNumber("", "0008", ""), 29)),
-            Ok((30, Token::RationalNumber("0", "9", "2"), 35))
+        let tokens = Lexer::new(
+            "// foo bar\n0x00fead0_12 9.0008 0_0",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new("// foo bar\n0x00fead0_12 .0008 0.9e-2", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (11, Token::HexNumber("0x00fead0_12"), 23),
+                (24, Token::RationalNumber("9", "0008", ""), 30),
+                (31, Token::Number("0_0", ""), 34)
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((11, Token::HexNumber("0x00fead0_12"), 23)),
-            Ok((24, Token::RationalNumber("", "0008", ""), 29)),
-            Ok((30, Token::RationalNumber("0", "9", "-2"), 36))
+        let tokens = Lexer::new(
+            "// foo bar\n0x00fead0_12 .0008 0.9e2",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new("1.2_3e2", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (11, Token::HexNumber("0x00fead0_12"), 23),
+                (24, Token::RationalNumber("", "0008", ""), 29),
+                (30, Token::RationalNumber("0", "9", "2"), 35)
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(Ok((0, Token::RationalNumber("1", "2_3", "2"), 7)))
-    );
-
-    let tokens = Lexer::new("\"foo\"", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(Ok((0, Token::StringLiteral(false, "foo"), 5)),)
-    );
-
-    let tokens = Lexer::new("pragma solidity >=0.5.0 <0.7.0;", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Pragma, 6)),
-            Ok((7, Token::Identifier("solidity"), 15)),
-            Ok((16, Token::StringLiteral(false, ">=0.5.0 <0.7.0"), 30)),
-            Ok((30, Token::Semicolon, 31)),
+        let tokens = Lexer::new(
+            "// foo bar\n0x00fead0_12 .0008 0.9e-2-2",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new("pragma solidity \t>=0.5.0 <0.7.0 \n ;", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (11, Token::HexNumber("0x00fead0_12"), 23),
+                (24, Token::RationalNumber("", "0008", ""), 29),
+                (30, Token::RationalNumber("0", "9", "-2"), 36),
+                (36, Token::Subtract, 37),
+                (37, Token::Number("2", ""), 38)
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Pragma, 6)),
-            Ok((7, Token::Identifier("solidity"), 15)),
-            Ok((17, Token::StringLiteral(false, ">=0.5.0 <0.7.0"), 31)),
-            Ok((34, Token::Semicolon, 35)),
+        let tokens = Lexer::new("1.2_3e2-", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::RationalNumber("1", "2_3", "2"), 7),
+                (7, Token::Subtract, 8)
+            )
+        );
+
+        let tokens = Lexer::new("\"foo\"", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(tokens, vec!((0, Token::StringLiteral(false, "foo"), 5)));
+
+        let tokens = Lexer::new(
+            "pragma solidity >=0.5.0 <0.7.0;",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new("pragma solidity 赤;", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Pragma, 6),
+                (7, Token::Identifier("solidity"), 15),
+                (16, Token::MoreEqual, 18),
+                (18, Token::Number("0", ""), 19),
+                (19, Token::Member, 20),
+                (20, Token::Number("5", ""), 21),
+                (21, Token::Member, 22),
+                (22, Token::Number("0", ""), 23),
+                (24, Token::Less, 25),
+                (25, Token::Number("0", ""), 26),
+                (26, Token::Member, 27),
+                (27, Token::Number("7", ""), 28),
+                (28, Token::Member, 29),
+                (29, Token::Number("0", ""), 30),
+                (30, Token::Semicolon, 31),
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Pragma, 6)),
-            Ok((7, Token::Identifier("solidity"), 15)),
-            Ok((16, Token::StringLiteral(false, "赤"), 19)),
-            Ok((19, Token::Semicolon, 20))
+        let tokens = Lexer::new(
+            "pragma solidity \t>=0.5.0 <0.7.0 \n ;",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new(">>= >> >= >", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Pragma, 6),
+                (7, Token::Identifier("solidity"), 15),
+                (17, Token::MoreEqual, 19),
+                (19, Token::Number("0", ""), 20),
+                (20, Token::Member, 21),
+                (21, Token::Number("5", ""), 22),
+                (22, Token::Member, 23),
+                (23, Token::Number("0", ""), 24),
+                (25, Token::Less, 26),
+                (26, Token::Number("0", ""), 27),
+                (27, Token::Member, 28),
+                (28, Token::Number("7", ""), 29),
+                (29, Token::Member, 30),
+                (30, Token::Number("0", ""), 31),
+                (34, Token::Semicolon, 35),
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::ShiftRightAssign, 3)),
-            Ok((4, Token::ShiftRight, 6)),
-            Ok((7, Token::MoreEqual, 9)),
-            Ok((10, Token::More, 11)),
+        let tokens =
+            Lexer::new("pragma solidity 赤;", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Pragma, 6),
+                (7, Token::Identifier("solidity"), 15),
+                (16, Token::Identifier("赤"), 19),
+                (19, Token::Semicolon, 20)
+            )
+        );
+
+        let tokens = Lexer::new(">>= >> >= >", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::ShiftRightAssign, 3),
+                (4, Token::ShiftRight, 6),
+                (7, Token::MoreEqual, 9),
+                (10, Token::More, 11),
+            )
+        );
+
+        let tokens = Lexer::new("<<= << <= <", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::ShiftLeftAssign, 3),
+                (4, Token::ShiftLeft, 6),
+                (7, Token::LessEqual, 9),
+                (10, Token::Less, 11),
+            )
+        );
+
+        let tokens = Lexer::new("-16 -- - -=", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Subtract, 1),
+                (1, Token::Number("16", ""), 3),
+                (4, Token::Decrement, 6),
+                (7, Token::Subtract, 8),
+                (9, Token::SubtractAssign, 11),
+            )
+        );
+
+        let tokens = Lexer::new("-4 ", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!((0, Token::Subtract, 1), (1, Token::Number("4", ""), 2),)
+        );
+
+        let mut errors = Vec::new();
+        let _ = Lexer::new(r#"hex"abcdefg""#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            errors,
+            vec![LexicalError::InvalidCharacterInHexLiteral(
+                Loc::File(0, 10, 11),
+                'g'
+            )]
+        );
+
+        let mut errors = Vec::new();
+        let _ = Lexer::new(r#" € "#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            errors,
+            vec!(LexicalError::UnrecognisedToken(
+                Loc::File(0, 1, 4),
+                "€".to_owned()
+            ))
+        );
+
+        let mut errors = Vec::new();
+        let _ = Lexer::new(r#"€"#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            errors,
+            vec!(LexicalError::UnrecognisedToken(
+                Loc::File(0, 0, 3),
+                "€".to_owned()
+            ))
+        );
+
+        let tokens =
+            Lexer::new(r#"pragma foo bar"#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Pragma, 6),
+                (7, Token::Identifier("foo"), 10),
+                (11, Token::Identifier("bar"), 14),
+            )
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new(r#"/// foo"#, 0, &mut comments, &mut errors).count();
+
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec![Comment::DocLine(Loc::File(0, 0, 7), "/// foo".to_owned())],
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new("/// jadajadadjada\n// bar", 0, &mut comments, &mut errors).count();
+
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(
+                Comment::DocLine(Loc::File(0, 0, 17), "/// jadajadadjada".to_owned()),
+                Comment::Line(Loc::File(0, 18, 24), "// bar".to_owned())
+            )
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new("/**/", 0, &mut comments, &mut errors).count();
+
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(Comment::Block(Loc::File(0, 0, 4), "/**/".to_owned()))
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new(r#"/** foo */"#, 0, &mut comments, &mut errors).count();
+
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(Comment::DocBlock(
+                Loc::File(0, 0, 10),
+                "/** foo */".to_owned()
+            ))
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new(
+            "/** jadajadadjada */\n/* bar */",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .count();
 
-    let tokens = Lexer::new("<<= << <= <", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(
+                Comment::DocBlock(Loc::File(0, 0, 20), "/** jadajadadjada */".to_owned()),
+                Comment::Block(Loc::File(0, 21, 30), "/* bar */".to_owned())
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::ShiftLeftAssign, 3)),
-            Ok((4, Token::ShiftLeft, 6)),
-            Ok((7, Token::LessEqual, 9)),
-            Ok((10, Token::Less, 11)),
+        let tokens = Lexer::new("/************/", 0, &mut comments, &mut errors).next();
+        assert_eq!(tokens, None);
+
+        let mut errors = Vec::new();
+        let _ = Lexer::new("/**", 0, &mut comments, &mut errors).next();
+        assert_eq!(
+            errors,
+            vec!(LexicalError::EndOfFileInComment(Loc::File(0, 0, 3)))
+        );
+
+        let mut errors = Vec::new();
+        let tokens = Lexer::new("//////////////", 0, &mut comments, &mut errors).next();
+        assert_eq!(tokens, None);
+
+        // some unicode tests
+        let tokens = Lexer::new(
+            ">=\u{a0} . très\u{2028}αβγδεζηθικλμνξοπρστυφχψω\u{85}カラス",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<_>>();
 
-    let tokens = Lexer::new("-16 -- - -=", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::MoreEqual, 2),
+                (5, Token::Member, 6),
+                (7, Token::Identifier("très"), 12),
+                (15, Token::Identifier("αβγδεζηθικλμνξοπρστυφχψω"), 63),
+                (65, Token::Identifier("カラス"), 74)
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Subtract, 1)),
-            Ok((1, Token::Number("16", ""), 3)),
-            Ok((4, Token::Decrement, 6)),
-            Ok((7, Token::Subtract, 8)),
-            Ok((9, Token::SubtractAssign, 11)),
+        let tokens = Lexer::new(r#"unicode"€""#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(tokens, vec!((0, Token::StringLiteral(true, "€"), 12)));
+
+        let tokens =
+            Lexer::new(r#"unicode "€""#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Identifier("unicode"), 7),
+                (8, Token::StringLiteral(false, "€"), 13),
+            )
+        );
+
+        // scientific notation
+        let tokens = Lexer::new(r#" 1e0 "#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(tokens, vec!((1, Token::Number("1", "0"), 4)));
+
+        let tokens = Lexer::new(r#" -9e0123"#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!((1, Token::Subtract, 2), (2, Token::Number("9", "0123"), 8),)
+        );
+
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(r#" -9e"#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(tokens, vec!((1, Token::Subtract, 2)));
+        assert_eq!(
+            errors,
+            vec!(LexicalError::MissingExponent(Loc::File(0, 2, 4)))
+        );
+
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(r#"9ea"#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(tokens, vec!((2, Token::Identifier("a"), 3)));
+        assert_eq!(
+            errors,
+            vec!(LexicalError::MissingExponent(Loc::File(0, 0, 3)))
+        );
+
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(r#"42.a"#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Number("42", ""), 2),
+                (2, Token::Member, 3),
+                (3, Token::Identifier("a"), 4)
+            )
+        );
+
+        let tokens = Lexer::new(r#"42..a"#, 0, &mut comments, &mut errors).collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Number("42", ""), 2),
+                (2, Token::Member, 3),
+                (3, Token::Member, 4),
+                (4, Token::Identifier("a"), 5)
+            )
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new("/// jadajadadjada\n// bar", 0, &mut comments, &mut errors).count();
+
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(
+                Comment::DocLine(Loc::File(0, 0, 17), "/// jadajadadjada".to_owned()),
+                Comment::Line(Loc::File(0, 18, 24), "// bar".to_owned())
+            )
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new("/**/", 0, &mut comments, &mut errors).count();
+
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(Comment::Block(Loc::File(0, 0, 4), "/**/".to_owned()))
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new(r#"/** foo */"#, 0, &mut comments, &mut errors).count();
+
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(Comment::DocBlock(
+                Loc::File(0, 0, 10),
+                "/** foo */".to_owned()
+            ))
+        );
+
+        comments.truncate(0);
+
+        let tokens = Lexer::new(
+            "/** jadajadadjada */\n/* bar */",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .count();
 
-    let tokens = Lexer::new("-4 ", 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, 0);
+        assert_eq!(
+            comments,
+            vec!(
+                Comment::DocBlock(Loc::File(0, 0, 20), "/** jadajadadjada */".to_owned()),
+                Comment::Block(Loc::File(0, 21, 30), "/* bar */".to_owned())
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Subtract, 1)),
-            Ok((1, Token::Number("4", ""), 2)),
+        let tokens = Lexer::new("/************/", 0, &mut comments, &mut errors).next();
+        assert_eq!(tokens, None);
+
+        let mut errors = Vec::new();
+        let _ = Lexer::new("/**", 0, &mut comments, &mut errors).next();
+        assert_eq!(
+            errors,
+            vec!(LexicalError::EndOfFileInComment(Loc::File(0, 0, 3)))
+        );
+
+        let mut errors = Vec::new();
+        let tokens = Lexer::new("//////////////", 0, &mut comments, &mut errors).next();
+        assert_eq!(tokens, None);
+
+        // some unicode tests
+        let tokens = Lexer::new(
+            ">=\u{a0} . très\u{2028}αβγδεζηθικλμνξοπρστυφχψω\u{85}カラス",
+            0,
+            &mut comments,
+            &mut errors,
         )
-    );
+        .collect::<Vec<(usize, Token, usize)>>();
 
-    let tokens = Lexer::new(r#"hex"abcdefg""#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::MoreEqual, 2),
+                (5, Token::Member, 6),
+                (7, Token::Identifier("très"), 12),
+                (15, Token::Identifier("αβγδεζηθικλμνξοπρστυφχψω"), 63),
+                (65, Token::Identifier("カラス"), 74)
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(Err(LexicalError::InvalidCharacterInHexLiteral(
-            Loc::File(0, 10, 11),
-            'g'
-        )))
-    );
+        let tokens =
+            Lexer::new(r#"unicode"€""#, 0, &mut comments, &mut errors)
+                .collect::<Vec<(usize, Token, usize)>>();
 
-    let tokens = Lexer::new(r#" € "#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, vec!((0, Token::StringLiteral(true, "€"), 12)));
 
-    assert_eq!(
-        tokens,
-        vec!(Err(LexicalError::UnrecognisedToken(
-            Loc::File(0, 1, 4),
-            "€".to_owned()
-        )))
-    );
+        let tokens =
+            Lexer::new(r#"unicode "€""#, 0, &mut comments, &mut errors)
+                .collect::<Vec<(usize, Token, usize)>>();
 
-    let tokens = Lexer::new(r#"€"#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Identifier("unicode"), 7),
+                (8, Token::StringLiteral(false, "€"), 13),
+            )
+        );
 
-    assert_eq!(
-        tokens,
-        vec!(Err(LexicalError::UnrecognisedToken(
-            Loc::File(0, 0, 3),
-            "€".to_owned()
-        )))
-    );
+        // scientific notation
+        let tokens =
+            Lexer::new(r#" 1e0 "#, 0, &mut comments, &mut errors)
+                .collect::<Vec<(usize, Token, usize)>>();
 
-    let tokens = Lexer::new(r#"pragma foo bar"#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        assert_eq!(tokens, vec!((1, Token::Number("1", "0"), 4)));
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Pragma, 6)),
-            Ok((7, Token::Identifier("foo"), 10)),
-            Ok((11, Token::StringLiteral(false, "bar"), 14)),
-        )
-    );
+        let tokens =
+            Lexer::new(r#" -9e0123"#, 0, &mut comments, &mut errors)
+                .collect::<Vec<(usize, Token, usize)>>();
 
-    comments.truncate(0);
+        assert_eq!(
+            tokens,
+            vec!((1, Token::Subtract, 2), (2, Token::Number("9", "0123"), 8),)
+        );
 
-    let tokens = Lexer::new(r#"/// foo"#, 0, &mut comments).count();
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(r#" -9e"#, 0, &mut comments, &mut errors)
+            .collect::<Vec<(usize, Token, usize)>>();
 
-    assert_eq!(tokens, 0);
-    assert_eq!(
-        comments,
-        vec![Comment::DocLine(Loc::File(0, 0, 7), "/// foo".to_owned())],
-    );
+        assert_eq!(tokens, vec!((1, Token::Subtract, 2)));
+        assert_eq!(
+            errors,
+            vec!(LexicalError::MissingExponent(Loc::File(0, 2, 4)))
+        );
 
-    comments.truncate(0);
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(r#"9ea"#, 0, &mut comments, &mut errors)
+            .collect::<Vec<(usize, Token, usize)>>();
 
-    let tokens = Lexer::new("/// jadajadadjada\n// bar", 0, &mut comments).count();
+        assert_eq!(tokens, vec!((2, Token::Identifier("a"), 3)));
+        assert_eq!(
+            errors,
+            vec!(LexicalError::MissingExponent(Loc::File(0, 0, 3)))
+        );
 
-    assert_eq!(tokens, 0);
-    assert_eq!(
-        comments,
-        vec!(
-            Comment::DocLine(Loc::File(0, 0, 17), "/// jadajadadjada".to_owned()),
-            Comment::Line(Loc::File(0, 18, 24), "// bar".to_owned())
-        )
-    );
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(r#"42.a"#, 0, &mut comments, &mut errors)
+            .collect::<Vec<(usize, Token, usize)>>();
 
-    comments.truncate(0);
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Number("42", ""), 2),
+                (2, Token::Member, 3),
+                (3, Token::Identifier("a"), 4)
+            )
+        );
 
-    let tokens = Lexer::new("/**/", 0, &mut comments).count();
+        let tokens =
+            Lexer::new(r#"42..a"#, 0, &mut comments, &mut errors)
+                .collect::<Vec<(usize, Token, usize)>>();
 
-    assert_eq!(tokens, 0);
-    assert_eq!(
-        comments,
-        vec!(Comment::Block(Loc::File(0, 0, 4), "/**/".to_owned()))
-    );
+        assert_eq!(
+            tokens,
+            vec!(
+                (0, Token::Number("42", ""), 2),
+                (2, Token::Member, 3),
+                (3, Token::Member, 4),
+                (4, Token::Identifier("a"), 5)
+            )
+        );
 
-    comments.truncate(0);
+        let mut errors = Vec::new();
+        let _ = Lexer::new(r#"hex"g""#, 0, &mut comments, &mut errors)
+            .collect::<Vec<(usize, Token, usize)>>();
+        assert_eq!(
+            errors,
+            vec!(LexicalError::InvalidCharacterInHexLiteral(
+                Loc::File(0, 4, 5),
+                'g'
+            ),)
+        );
 
-    let tokens = Lexer::new(r#"/** foo */"#, 0, &mut comments).count();
+        let mut errors = Vec::new();
+        let tokens =
+            Lexer::new(".9", 0, &mut comments, &mut errors).collect::<Vec<(usize, Token, usize)>>();
 
-    assert_eq!(tokens, 0);
-    assert_eq!(
-        comments,
-        vec!(Comment::DocBlock(
-            Loc::File(0, 0, 10),
-            "/** foo */".to_owned()
-        ))
-    );
+        assert_eq!(tokens, vec!((0, Token::RationalNumber("", "9", ""), 2)));
 
-    comments.truncate(0);
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(".9e10", 0, &mut comments, &mut errors)
+            .collect::<Vec<(usize, Token, usize)>>();
 
-    let tokens = Lexer::new("/** jadajadadjada */\n/* bar */", 0, &mut comments).count();
+        assert_eq!(tokens, vec!((0, Token::RationalNumber("", "9", "10"), 5)));
 
-    assert_eq!(tokens, 0);
-    assert_eq!(
-        comments,
-        vec!(
-            Comment::DocBlock(Loc::File(0, 0, 20), "/** jadajadadjada */".to_owned()),
-            Comment::Block(Loc::File(0, 21, 30), "/* bar */".to_owned())
-        )
-    );
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(".9", 0, &mut comments, &mut errors).collect::<Vec<_>>();
 
-    let tokens = Lexer::new("/************/", 0, &mut comments).next();
-    assert_eq!(tokens, None);
+        assert_eq!(tokens, vec!((0, Token::RationalNumber("", "9", ""), 2)));
 
-    let tokens = Lexer::new("/**", 0, &mut comments).next();
-    assert_eq!(
-        tokens,
-        Some(Err(LexicalError::EndOfFileInComment(Loc::File(0, 0, 3))))
-    );
+        let mut errors = Vec::new();
+        let tokens = Lexer::new(".9e10", 0, &mut comments, &mut errors).collect::<Vec<_>>();
 
-    let tokens = Lexer::new("//////////////", 0, &mut comments).next();
-    assert_eq!(tokens, None);
+        assert_eq!(tokens, vec!((0, Token::RationalNumber("", "9", "10"), 5)));
 
-    // some unicode tests
-    let tokens = Lexer::new(
-        ">=\u{a0} . très\u{2028}αβγδεζηθικλμνξοπρστυφχψω\u{85}カラス",
-        0,
-        &mut comments,
-    )
-    .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
+        errors.clear();
+        comments.clear();
+        let tokens =
+            Lexer::new("@my_annotation", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+        assert_eq!(tokens, vec![(0, Token::Annotation("my_annotation"), 14)]);
+        assert!(errors.is_empty());
+        assert!(comments.is_empty());
 
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::MoreEqual, 2)),
-            Ok((5, Token::Member, 6)),
-            Ok((7, Token::Identifier("très"), 12)),
-            Ok((15, Token::Identifier("αβγδεζηθικλμνξοπρστυφχψω"), 63)),
-            Ok((65, Token::Identifier("カラス"), 74))
-        )
-    );
-
-    let tokens = Lexer::new(r#"unicode"€""#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(tokens, vec!(Ok((0, Token::StringLiteral(true, "€"), 12)),));
-
-    let tokens = Lexer::new(r#"unicode "€""#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Identifier("unicode"), 7)),
-            Ok((8, Token::StringLiteral(false, "€"), 13)),
-        )
-    );
-
-    // scientific notation
-    let tokens = Lexer::new(r#" 1e0 "#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(tokens, vec!(Ok((1, Token::Number("1", "0"), 4)),));
-
-    let tokens = Lexer::new(r#" -9e0123"#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((1, Token::Subtract, 2)),
-            Ok((2, Token::Number("9", "0123"), 8)),
-        )
-    );
-
-    let tokens = Lexer::new(r#" -9e"#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((1, Token::Subtract, 2)),
-            Err(LexicalError::MissingExponent(Loc::File(0, 2, 4)))
-        )
-    );
-
-    let tokens = Lexer::new(r#"9ea"#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(
-            Err(LexicalError::MissingExponent(Loc::File(0, 0, 3))),
-            Ok((2, Token::Identifier("a"), 3))
-        )
-    );
-
-    let tokens = Lexer::new(r#"42.a"#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Number("42", ""), 2)),
-            Ok((2, Token::Member, 3)),
-            Ok((3, Token::Identifier("a"), 4))
-        )
-    );
-
-    let tokens = Lexer::new(r#"42..a"#, 0, &mut comments)
-        .collect::<Vec<Result<(usize, Token, usize), LexicalError>>>();
-
-    assert_eq!(
-        tokens,
-        vec!(
-            Ok((0, Token::Number("42", ""), 2)),
-            Ok((2, Token::Member, 3)),
-            Ok((3, Token::Member, 4)),
-            Ok((4, Token::Identifier("a"), 5))
-        )
-    );
+        errors.clear();
+        comments.clear();
+        let tokens =
+            Lexer::new("@ my_annotation", 0, &mut comments, &mut errors).collect::<Vec<_>>();
+        assert_eq!(tokens, vec![(2, Token::Identifier("my_annotation"), 15)]);
+        assert_eq!(
+            errors,
+            vec![LexicalError::UnrecognisedToken(
+                Loc::File(0, 0, 1),
+                "@".to_string()
+            )]
+        );
+        assert!(comments.is_empty());
+    }
 }

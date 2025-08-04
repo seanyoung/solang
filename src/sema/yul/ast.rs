@@ -7,27 +7,32 @@ use crate::sema::Recurse;
 use num_bigint::BigInt;
 use solang_parser::pt;
 use solang_parser::pt::{CodeLocation, StorageLocation};
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct InlineAssembly {
     pub loc: pt::Loc,
+    /// is the assembly ("memory-safe") { .. } flag specified
+    /// This flag is only permitted on EVM. It is not used by solang itself, however external
+    /// tools that wish to use our AST can use it.
+    pub memory_safe: bool,
     pub body: Vec<YulStatement>,
     // (begin, end) offset for Namespace::yul_functions
     pub functions: std::ops::Range<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct YulBlock {
     pub loc: pt::Loc,
     pub reachable: bool,
     pub next_reachable: bool,
-    pub body: Vec<YulStatement>,
+    pub statements: Vec<YulStatement>,
 }
 
 impl YulBlock {
+    /// Returns if whatever follows the YulBlock is reachable
     pub fn is_next_reachable(&self) -> bool {
-        self.body.is_empty() || (!self.body.is_empty() && self.next_reachable)
+        self.statements.is_empty() || self.next_reachable
     }
 }
 
@@ -41,7 +46,12 @@ pub enum YulExpression {
     ConstantVariable(pt::Loc, Type, Option<usize>, usize),
     StorageVariable(pt::Loc, Type, usize, usize),
     BuiltInCall(pt::Loc, YulBuiltInFunction, Vec<YulExpression>),
-    FunctionCall(pt::Loc, usize, Vec<YulExpression>, Arc<Vec<Parameter>>),
+    FunctionCall(
+        pt::Loc,
+        usize,
+        Vec<YulExpression>,
+        Arc<Vec<Parameter<Type>>>,
+    ),
     SuffixAccess(pt::Loc, Box<YulExpression>, YulSuffix),
 }
 
@@ -87,17 +97,15 @@ pub enum YulSuffix {
     Address,
 }
 
-impl ToString for YulSuffix {
-    fn to_string(&self) -> String {
-        let name = match self {
-            YulSuffix::Offset => "offset",
-            YulSuffix::Slot => "slot",
-            YulSuffix::Length => "length",
-            YulSuffix::Selector => "selector",
-            YulSuffix::Address => "address",
-        };
-
-        name.to_string()
+impl fmt::Display for YulSuffix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            YulSuffix::Offset => f.write_str("offset"),
+            YulSuffix::Slot => f.write_str("slot"),
+            YulSuffix::Length => f.write_str("length"),
+            YulSuffix::Selector => f.write_str("selector"),
+            YulSuffix::Address => f.write_str("address"),
+        }
     }
 }
 
@@ -118,13 +126,13 @@ impl CodeLocation for YulExpression {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct YulFunction {
     pub loc: pt::Loc,
     pub name: String,
-    pub params: Arc<Vec<Parameter>>,
-    pub returns: Arc<Vec<Parameter>>,
-    pub body: Vec<YulStatement>,
+    pub params: Arc<Vec<Parameter<Type>>>,
+    pub returns: Arc<Vec<Parameter<Type>>>,
+    pub body: YulBlock,
     pub symtable: Symtable,
     pub parent_sol_func: Option<usize>,
     pub func_no: usize,
@@ -137,11 +145,11 @@ impl FunctionAttributes for YulFunction {
         &self.symtable
     }
 
-    fn get_parameters(&self) -> &Vec<Parameter> {
+    fn get_parameters(&self) -> &Vec<Parameter<Type>> {
         &self.params
     }
 
-    fn get_returns(&self) -> &Vec<Parameter> {
+    fn get_returns(&self) -> &Vec<Parameter<Type>> {
         &self.returns
     }
 }
@@ -175,6 +183,8 @@ pub enum YulStatement {
 }
 
 impl YulStatement {
+    /// Returns if the current statement is reachable, i.e. there is a code path from the entry to
+    /// it.
     pub fn is_reachable(&self) -> bool {
         match self {
             YulStatement::FunctionCall(_, reachable, ..)

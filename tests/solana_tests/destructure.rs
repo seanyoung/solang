@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::build_solidity;
-use ethabi::{ethereum_types::U256, Token};
+use crate::{build_solidity, BorshToken};
+use num_bigint::BigInt;
+use num_traits::One;
 
 #[test]
 fn conditional_destructure() {
@@ -17,34 +18,93 @@ fn conditional_destructure() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("f", &[Token::Bool(true), Token::Bool(true)], &[], None);
+    let returns = vm
+        .function("f")
+        .arguments(&[BorshToken::Bool(true), BorshToken::Bool(true)])
+        .call()
+        .unwrap()
+        .unwrap_tuple();
 
     assert_eq!(
         returns,
-        vec![Token::Int(U256::from(1)), Token::Int(U256::from(2)),]
+        vec![
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::one(),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(2u8),
+            }
+        ]
     );
 
-    let returns = vm.function("f", &[Token::Bool(true), Token::Bool(false)], &[], None);
+    let returns = vm
+        .function("f")
+        .arguments(&[BorshToken::Bool(true), BorshToken::Bool(false)])
+        .call()
+        .unwrap()
+        .unwrap_tuple();
 
     assert_eq!(
         returns,
-        vec![Token::Int(U256::from(3)), Token::Int(U256::from(4)),]
+        vec![
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(4u8),
+            }
+        ]
     );
 
-    let returns = vm.function("f", &[Token::Bool(false), Token::Bool(false)], &[], None);
+    let returns = vm
+        .function("f")
+        .arguments(&[BorshToken::Bool(false), BorshToken::Bool(false)])
+        .call()
+        .unwrap()
+        .unwrap_tuple();
 
     assert_eq!(
         returns,
-        vec![Token::Int(U256::from(5)), Token::Int(U256::from(6)),]
+        vec![
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(5u8),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(6u8),
+            }
+        ]
     );
 
-    let returns = vm.function("f", &[Token::Bool(false), Token::Bool(true)], &[], None);
+    let returns = vm
+        .function("f")
+        .arguments(&[BorshToken::Bool(false), BorshToken::Bool(true)])
+        .call()
+        .unwrap()
+        .unwrap_tuple();
 
     assert_eq!(
         returns,
-        vec![Token::Int(U256::from(5)), Token::Int(U256::from(6)),]
+        vec![
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(5u8),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(6u8),
+            }
+        ]
     );
 }
 
@@ -64,13 +124,30 @@ fn casting_destructure() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("f", &[], &[], None);
+    let returns = vm
+        .function("f")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap()
+        .unwrap_tuple();
 
     assert_eq!(
         returns,
-        vec![Token::Int(U256::from(1)), Token::Int(U256::from(2)),]
+        vec![
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::one(),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(2u8),
+            }
+        ]
     );
 
     let mut vm = build_solidity(
@@ -83,9 +160,51 @@ fn casting_destructure() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("f", &[], &[], None);
+    let returns = vm.function("f").call().unwrap();
 
-    assert_eq!(returns, vec![Token::String(String::from("Hello")),]);
+    assert_eq!(returns, BorshToken::String(String::from("Hello")));
+}
+
+#[test]
+fn casting_storage_destructure() {
+    let mut vm = build_solidity(
+        r#"
+        contract c {
+            address factory;
+            int decimals;
+            int[2] arr1;
+            int[2] arr2;
+
+            constructor() {
+                int[2] storage x;
+
+                (x, factory, decimals) = foo();
+                x[0] = 2;
+            }
+
+            function foo() internal view returns (int[2] storage, address, int) {
+                return (arr2, address(2), 5);
+            }
+
+            function bar() public view {
+                require(factory == address(2), "address wrong");
+                require(decimals == 5, "int wrong");
+                require(arr2[0] == 2, "array wrong");
+            }
+        }"#,
+    );
+
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    vm.function("bar")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 }

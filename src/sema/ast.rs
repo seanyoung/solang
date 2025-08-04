@@ -1,21 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::symtable::Symtable;
+use crate::abi::anchor::function_discriminator;
 use crate::codegen::cfg::{ControlFlowGraph, Instr};
 use crate::diagnostics::Diagnostics;
+use crate::sema::ast::ExternalCallAccounts::{AbsentArgument, NoAccount};
 use crate::sema::yul::ast::{InlineAssembly, YulFunction};
 use crate::sema::Recurse;
 use crate::{codegen, Target};
+use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_rational::BigRational;
+use once_cell::unsync::OnceCell;
 pub use solang_parser::diagnostics::*;
 use solang_parser::pt;
-use solang_parser::pt::{CodeLocation, OptionalCodeLocation};
-use std::sync::Arc;
+use solang_parser::pt::{CodeLocation, FunctionTy, OptionalCodeLocation};
+use std::cell::RefCell;
+use std::fmt::Write;
 use std::{
+    collections::HashSet,
     collections::{BTreeMap, HashMap},
-    fmt,
+    fmt, hash,
     path::PathBuf,
+    sync::Arc,
 };
 use tiny_keccak::{Hasher, Keccak};
 
@@ -34,7 +41,7 @@ pub enum Type {
     Enum(usize),
     /// The usize is an index into contracts in the namespace
     Struct(StructType),
-    Mapping(Box<Type>, Box<Type>),
+    Mapping(Mapping),
     /// The usize is an index into contracts in the namespace
     Contract(usize),
     Ref(Box<Type>),
@@ -65,6 +72,30 @@ pub enum Type {
     /// e.g. Type::Bytes is a pointer to struct.vector. When we advance it, it is a pointer
     /// to latter's data region.
     BufferPointer,
+    /// The function selector (or discriminator) type is 4 bytes on Polkadot and 8 bytes on Solana
+    FunctionSelector,
+}
+
+#[derive(Eq, Clone, Debug)]
+pub struct Mapping {
+    pub key: Box<Type>,
+    pub key_name: Option<pt::Identifier>,
+    pub value: Box<Type>,
+    pub value_name: Option<pt::Identifier>,
+}
+
+// Ensure the key_name and value_name is not used for comparison or hashing
+impl PartialEq for Mapping {
+    fn eq(&self, other: &Mapping) -> bool {
+        self.key == other.key && self.value == other.value
+    }
+}
+
+impl hash::Hash for Mapping {
+    fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
+        self.key.hash(hasher);
+        self.value.hash(hasher);
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
@@ -120,15 +151,16 @@ pub enum StructType {
     AccountInfo,
     AccountMeta,
     ExternalFunction,
+    SolParameters,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct StructDecl {
     pub tags: Vec<Tag>,
-    pub name: String,
+    pub id: pt::Identifier,
     pub loc: pt::Loc,
     pub contract: Option<String>,
-    pub fields: Vec<Parameter>,
+    pub fields: Vec<Parameter<Type>>,
     // List of offsets of the fields, last entry is the offset for the struct overall size
     pub offsets: Vec<BigInt>,
     // Same, but now in storage
@@ -138,10 +170,10 @@ pub struct StructDecl {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct EventDecl {
     pub tags: Vec<Tag>,
-    pub name: String,
+    pub id: pt::Identifier,
     pub loc: pt::Loc,
     pub contract: Option<usize>,
-    pub fields: Vec<Parameter>,
+    pub fields: Vec<Parameter<Type>>,
     pub signature: String,
     pub anonymous: bool,
     pub used: bool,
@@ -150,7 +182,26 @@ pub struct EventDecl {
 impl EventDecl {
     pub fn symbol_name(&self, ns: &Namespace) -> String {
         match &self.contract {
-            Some(c) => format!("{}.{}", ns.contracts[*c].name, self.name),
+            Some(c) => format!("{}.{}", ns.contracts[*c].id, self.id),
+            None => self.id.to_string(),
+        }
+    }
+}
+
+#[derive(Default, PartialEq, Eq, Clone, Debug)]
+pub struct ErrorDecl {
+    pub tags: Vec<Tag>,
+    pub name: String,
+    pub loc: pt::Loc,
+    pub contract: Option<usize>,
+    pub fields: Vec<Parameter<Type>>,
+    pub used: bool,
+}
+
+impl ErrorDecl {
+    pub fn symbol_name(&self, ns: &Namespace) -> String {
+        match &self.contract {
+            Some(c) => format!("{}.{}", ns.contracts[*c].id, self.name),
             None => self.name.to_string(),
         }
     }
@@ -161,19 +212,20 @@ impl fmt::Display for StructDecl {
     /// inside or outside a contract.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.contract {
-            Some(c) => write!(f, "{}.{}", c, self.name),
-            None => write!(f, "{}", self.name),
+            Some(c) => write!(f, "{}.{}", c, self.id),
+            None => write!(f, "{}", self.id),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct EnumDecl {
     pub tags: Vec<Tag>,
-    pub name: String,
+    pub id: pt::Identifier,
     pub contract: Option<String>,
     pub loc: pt::Loc,
     pub ty: Type,
-    pub values: HashMap<String, (pt::Loc, usize)>,
+    pub values: IndexMap<String, pt::Loc>,
 }
 
 impl fmt::Display for EnumDecl {
@@ -181,14 +233,14 @@ impl fmt::Display for EnumDecl {
     /// inside or outside a contract.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.contract {
-            Some(c) => write!(f, "{}.{}", c, self.name),
-            None => write!(f, "{}", self.name),
+            Some(c) => write!(f, "{}.{}", c, self.id),
+            None => write!(f, "{}", self.id),
         }
     }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Parameter {
+pub struct Parameter<Type> {
     pub loc: pt::Loc,
     /// The name can empty (e.g. in an event field or unnamed parameter/return)
     pub id: Option<pt::Identifier>,
@@ -199,12 +251,37 @@ pub struct Parameter {
     pub indexed: bool,
     /// Some builtin structs have readonly fields
     pub readonly: bool,
-    /// A struct may contain itself which make the struct infinite size in
-    /// memory. This boolean specifies which field introduces the recursion.
+    /// A recursive struct may contain itself which make the struct infinite size in memory.
+    pub infinite_size: bool,
+    /// Is this struct field recursive. Recursive does not mean infinite size in all cases:
+    /// `struct S { S[] s }` is recursive but not of infinite size.
     pub recursive: bool,
+
+    pub annotation: Option<ParameterAnnotation>,
 }
 
-impl Parameter {
+#[derive(Debug, Eq, Clone, PartialEq)]
+pub struct ParameterAnnotation {
+    pub loc: pt::Loc,
+    pub id: pt::Identifier,
+}
+
+impl Parameter<Type> {
+    /// Create a new instance of the given `Type`, with all other values set to their default.
+    pub fn new_default(ty: Type) -> Self {
+        Self {
+            ty,
+            loc: Default::default(),
+            id: Default::default(),
+            ty_loc: Default::default(),
+            indexed: Default::default(),
+            readonly: Default::default(),
+            infinite_size: Default::default(),
+            recursive: Default::default(),
+            annotation: Default::default(),
+        }
+    }
+
     pub fn name_as_str(&self) -> &str {
         if let Some(name) = &self.id {
             name.name.as_str()
@@ -239,41 +316,77 @@ impl fmt::Display for Mutability {
     }
 }
 
+#[derive(Debug)]
 pub struct Function {
     pub tags: Vec<Tag>,
     /// The location of the prototype (not body)
+    pub loc_prototype: pt::Loc,
     pub loc: pt::Loc,
-    pub name: String,
+    pub id: pt::Identifier,
     pub contract_no: Option<usize>,
     pub ty: pt::FunctionTy,
     pub signature: String,
     pub mutability: Mutability,
     pub visibility: pt::Visibility,
-    pub params: Arc<Vec<Parameter>>,
-    pub returns: Arc<Vec<Parameter>>,
-    // constructor arguments for base contracts, only present on constructors
+    pub params: Arc<Vec<Parameter<Type>>>,
+    pub returns: Arc<Vec<Parameter<Type>>>,
+    /// Constructor arguments for base contracts, only present on constructors
     pub bases: BTreeMap<usize, (pt::Loc, usize, Vec<Expression>)>,
-    // modifiers for functions
+    /// Modifiers for functions
     pub modifiers: Vec<Expression>,
     pub is_virtual: bool,
     /// Is this function an acccesor function created by a public variable
     pub is_accessor: bool,
     pub is_override: Option<(pt::Loc, Vec<usize>)>,
+    /// The selector (known as discriminator on Solana/Anchor)
+    pub selector: Option<(pt::Loc, Vec<u8>)>,
     /// Was the function declared with a body
     pub has_body: bool,
     /// The resolved body (if any)
     pub body: Vec<Statement>,
     pub symtable: Symtable,
-    // What events are emitted by the body of this function
+    /// What events are emitted by the body of this function
     pub emits_events: Vec<usize>,
+    /// For overloaded functions this is the mangled (unique) name.
+    pub mangled_name: String,
+    /// Solana constructors may have seeds specified using @seed tags
+    pub annotations: ConstructorAnnotations,
+    /// Which contracts should we use the mangled name in?
+    pub mangled_name_contracts: HashSet<usize>,
+    /// This indexmap stores the accounts this functions needs to be called on Solana
+    /// The string is the account's name
+    pub solana_accounts: RefCell<IndexMap<String, SolanaAccount>>,
+    /// List of contracts this function creates
+    pub creates: Vec<(pt::Loc, usize)>,
 }
 
-/// This trait provides a single interface for fetching paramenters, returns and the symbol table
+/// This struct represents a Solana account. There is no name field, because
+/// it is stored in a IndexMap<String, SolanaAccount> (see above)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SolanaAccount {
+    pub loc: pt::Loc,
+    pub is_signer: bool,
+    pub is_writer: bool,
+    /// Has the compiler automatically generated this account entry?
+    pub generated: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct ConstructorAnnotations {
+    // (annotation location, annotation expression)
+    pub seeds: Vec<(pt::Loc, Expression)>,
+    pub space: Option<(pt::Loc, Expression)>,
+    pub bump: Option<(pt::Loc, Expression)>,
+    // (annotation location, account name)
+    pub payer: Option<(pt::Loc, String)>,
+}
+
+/// This trait provides a single interface for fetching parameters, returns and the symbol table
 /// for both yul and solidity functions
 pub trait FunctionAttributes {
     fn get_symbol_table(&self) -> &Symtable;
-    fn get_parameters(&self) -> &Vec<Parameter>;
-    fn get_returns(&self) -> &Vec<Parameter>;
+    fn get_parameters(&self) -> &Vec<Parameter<Type>>;
+    fn get_returns(&self) -> &Vec<Parameter<Type>>;
 }
 
 impl FunctionAttributes for Function {
@@ -281,46 +394,56 @@ impl FunctionAttributes for Function {
         &self.symtable
     }
 
-    fn get_parameters(&self) -> &Vec<Parameter> {
+    fn get_parameters(&self) -> &Vec<Parameter<Type>> {
         &self.params
     }
 
-    fn get_returns(&self) -> &Vec<Parameter> {
+    fn get_returns(&self) -> &Vec<Parameter<Type>> {
         &self.returns
     }
 }
 
 impl Function {
     pub fn new(
+        loc_prototype: pt::Loc,
         loc: pt::Loc,
-        name: String,
+        id: pt::Identifier,
         contract_no: Option<usize>,
         tags: Vec<Tag>,
         ty: pt::FunctionTy,
         mutability: Option<pt::Mutability>,
         visibility: pt::Visibility,
-        params: Vec<Parameter>,
-        returns: Vec<Parameter>,
+        params: Vec<Parameter<Type>>,
+        returns: Vec<Parameter<Type>>,
         ns: &Namespace,
     ) -> Self {
         let signature = match ty {
             pt::FunctionTy::Fallback => String::from("@fallback"),
             pt::FunctionTy::Receive => String::from("@receive"),
-            _ => ns.signature(&name, &params),
+            _ => ns.signature(&id.name, &params),
         };
 
         let mutability = match mutability {
-            None => Mutability::Nonpayable(loc),
+            None => Mutability::Nonpayable(loc_prototype),
             Some(pt::Mutability::Payable(loc)) => Mutability::Payable(loc),
             Some(pt::Mutability::Pure(loc)) => Mutability::Pure(loc),
             Some(pt::Mutability::View(loc)) => Mutability::View(loc),
             Some(pt::Mutability::Constant(loc)) => Mutability::View(loc),
         };
 
+        let mangled_name = signature
+            .replace('(', "_")
+            .replace(')', "")
+            .replace(',', "_")
+            .replace("[]", "Array")
+            .replace('[', "Array")
+            .replace(']', "");
+
         Function {
             tags,
+            loc_prototype,
             loc,
-            name,
+            id,
             contract_no,
             ty,
             signature,
@@ -330,25 +453,47 @@ impl Function {
             returns: Arc::new(returns),
             bases: BTreeMap::new(),
             modifiers: Vec::new(),
+            selector: None,
             is_virtual: false,
             is_accessor: false,
             has_body: false,
             is_override: None,
             body: Vec::new(),
-            symtable: Symtable::new(),
+            symtable: Symtable::default(),
             emits_events: Vec::new(),
+            mangled_name,
+            annotations: ConstructorAnnotations::default(),
+            mangled_name_contracts: HashSet::new(),
+            solana_accounts: IndexMap::new().into(),
+            creates: Vec::new(),
         }
     }
 
     /// Generate selector for this function
-    pub fn selector(&self) -> u32 {
-        let mut res = [0u8; 32];
+    pub fn selector(&self, ns: &Namespace, contract_no: &usize) -> Vec<u8> {
+        if let Some((_, selector)) = &self.selector {
+            selector.clone()
+        } else if ns.target == Target::Solana {
+            match self.ty {
+                FunctionTy::Constructor => function_discriminator("new"),
+                _ => {
+                    let discriminator_image = if self.mangled_name_contracts.contains(contract_no) {
+                        &self.mangled_name
+                    } else {
+                        &self.id.name
+                    };
+                    function_discriminator(discriminator_image.as_str())
+                }
+            }
+        } else {
+            let mut res = [0u8; 32];
 
-        let mut hasher = Keccak::v256();
-        hasher.update(self.signature.as_bytes());
-        hasher.finalize(&mut res);
+            let mut hasher = Keccak::v256();
+            hasher.update(self.signature.as_bytes());
+            hasher.finalize(&mut res);
 
-        u32::from_be_bytes([res[0], res[1], res[2], res[3]])
+            res[..4].to_vec()
+        }
     }
 
     /// Is this a constructor
@@ -361,7 +506,26 @@ impl Function {
         matches!(self.mutability, Mutability::Payable(_))
     }
 
-    /// Is this function accessable externally
+    /// Does this function have an @payer annotation?
+    pub fn has_payer_annotation(&self) -> bool {
+        self.annotations.payer.is_some()
+    }
+
+    /// Does this function have an @seed annotation?
+    pub fn has_seed_annotation(&self) -> bool {
+        !self.annotations.seeds.is_empty()
+    }
+
+    /// Does this function have the pure state
+    pub fn is_pure(&self) -> bool {
+        matches!(self.mutability, Mutability::Pure(_))
+    }
+
+    /// Is this function visible externally, based on it's visibilty modifiers.
+    ///
+    /// Due to inheritance, this alone does not determine whether a function is
+    /// externally callable in the final contract artifact; for that, use
+    /// `Namespace::function_externally_callable()` instead.
     pub fn is_public(&self) -> bool {
         matches!(
             self.visibility,
@@ -372,18 +536,6 @@ impl Function {
     /// Is this function accessable only from same contract
     pub fn is_private(&self) -> bool {
         matches!(self.visibility, pt::Visibility::Private(_))
-    }
-
-    /// Print the function type, contract name, and name
-    pub fn print_name(&self, ns: &Namespace) -> String {
-        if let Some(contract_no) = &self.contract_no {
-            format!(
-                "{} {}.{}",
-                self.ty, ns.contracts[*contract_no].name, self.name
-            )
-        } else {
-            format!("{} {}", self.ty, self.name)
-        }
     }
 }
 
@@ -401,8 +553,7 @@ impl From<&pt::Type> for Type {
             pt::Type::Rational => Type::Rational,
             pt::Type::DynamicBytes => Type::DynamicBytes,
             // needs special casing
-            pt::Type::Function { .. } => unimplemented!(),
-            pt::Type::Mapping(..) => unimplemented!(),
+            pt::Type::Function { .. } | pt::Type::Mapping { .. } => unimplemented!(),
         }
     }
 }
@@ -427,6 +578,7 @@ impl fmt::Display for UserTypeDecl {
     }
 }
 
+#[derive(Debug)]
 pub struct Variable {
     pub tags: Vec<Tag>,
     pub name: String,
@@ -438,15 +590,17 @@ pub struct Variable {
     pub initializer: Option<Expression>,
     pub assigned: bool,
     pub read: bool,
+    pub storage_type: Option<pt::StorageType>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Symbol {
     Enum(pt::Loc, usize),
     Function(Vec<(pt::Loc, usize)>),
     Variable(pt::Loc, Option<usize>, usize),
     Struct(pt::Loc, StructType),
     Event(Vec<(pt::Loc, usize)>),
+    Error(pt::Loc, usize),
     Contract(pt::Loc, usize),
     Import(pt::Loc, usize),
     UserType(pt::Loc, usize),
@@ -460,6 +614,7 @@ impl CodeLocation for Symbol {
             | Symbol::Struct(loc, _)
             | Symbol::Contract(loc, _)
             | Symbol::Import(loc, _)
+            | Symbol::Error(loc, _)
             | Symbol::UserType(loc, _) => *loc,
             Symbol::Event(items) | Symbol::Function(items) => items[0].0,
         }
@@ -506,15 +661,21 @@ pub struct File {
     pub line_starts: Vec<usize>,
     /// Indicates the file number in FileResolver.files
     pub cache_no: Option<usize>,
+    /// Index into FileResolver.import_paths. This is `None` when this File was
+    /// created not during `parse_and_resolve` (e.g., builtins)
+    pub import_no: Option<usize>,
 }
 
 /// When resolving a Solidity file, this holds all the resolved items
+#[derive(Debug)]
 pub struct Namespace {
     pub target: Target,
+    pub pragmas: Vec<Pragma>,
     pub files: Vec<File>,
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
     pub events: Vec<EventDecl>,
+    pub errors: Vec<ErrorDecl>,
     pub contracts: Vec<Contract>,
     /// Global using declarations
     pub using: Vec<Using>,
@@ -544,6 +705,70 @@ pub struct Namespace {
     pub hover_overrides: HashMap<pt::Loc, String>,
 }
 
+#[derive(Debug)]
+pub enum Pragma {
+    Identifier {
+        loc: pt::Loc,
+        name: pt::Identifier,
+        value: pt::Identifier,
+    },
+    StringLiteral {
+        loc: pt::Loc,
+        name: pt::Identifier,
+        value: pt::StringLiteral,
+    },
+    SolidityVersion {
+        loc: pt::Loc,
+        versions: Vec<VersionReq>,
+    },
+}
+
+#[derive(Debug)]
+pub enum VersionReq {
+    Plain {
+        loc: pt::Loc,
+        version: Version,
+    },
+    Operator {
+        loc: pt::Loc,
+        op: pt::VersionOp,
+        version: Version,
+    },
+    Range {
+        loc: pt::Loc,
+        from: Version,
+        to: Version,
+    },
+    Or {
+        loc: pt::Loc,
+        left: Box<VersionReq>,
+        right: Box<VersionReq>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Version {
+    pub major: u32,
+    pub minor: Option<u32>,
+    pub patch: Option<u32>,
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.major.fmt(f)?;
+        if let Some(minor) = self.minor {
+            f.write_char('.')?;
+            minor.fmt(f)?
+        }
+        if let Some(patch) = self.patch {
+            f.write_char('.')?;
+            patch.fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct Layout {
     pub slot: BigInt,
     pub contract_no: usize,
@@ -551,45 +776,65 @@ pub struct Layout {
     pub ty: Type,
 }
 
+#[derive(Debug)]
 pub struct Base {
     pub loc: pt::Loc,
     pub contract_no: usize,
     pub constructor: Option<(usize, Vec<Expression>)>,
 }
 
+#[derive(Debug)]
 pub struct Using {
     pub list: UsingList,
     pub ty: Option<Type>,
     pub file_no: Option<usize>,
 }
 
+#[derive(Debug)]
 pub enum UsingList {
     Library(usize),
-    Functions(Vec<usize>),
+    Functions(Vec<UsingFunction>),
 }
 
+/// Using binding for a function, optionally for an operator
+#[derive(Debug)]
+pub struct UsingFunction {
+    pub loc: pt::Loc,
+    pub function_no: usize,
+    pub oper: Option<pt::UserDefinedOperator>,
+}
+
+#[derive(Debug)]
 pub struct Contract {
     pub tags: Vec<Tag>,
     pub loc: pt::Loc,
     pub ty: pt::ContractTy,
-    pub name: String,
+    pub id: pt::Identifier,
     pub bases: Vec<Base>,
     pub using: Vec<Using>,
     pub layout: Vec<Layout>,
     pub fixed_layout_size: BigInt,
     pub functions: Vec<usize>,
     pub all_functions: BTreeMap<usize, usize>,
-    pub virtual_functions: HashMap<String, usize>,
+    /// maps the name of virtual functions to a vector of overriden functions.
+    /// Each time a virtual function is overriden, there will be an entry pushed to the vector. The last
+    /// element represents the current overriding function - there will be at least one entry in this vector.
+    pub virtual_functions: HashMap<String, Vec<usize>>,
     pub yul_functions: Vec<usize>,
     pub variables: Vec<Variable>,
-    // List of contracts this contract instantiates
+    /// List of contracts this contract instantiates
     pub creates: Vec<usize>,
-    // List of events this contract produces
-    pub sends_events: Vec<usize>,
+    /// List of events this contract may emit
+    pub emits_events: Vec<usize>,
     pub initializer: Option<usize>,
     pub default_constructor: Option<(Function, usize)>,
     pub cfg: Vec<ControlFlowGraph>,
-    pub code: Vec<u8>,
+    /// Compiled program. Only available after emit.
+    pub code: OnceCell<Vec<u8>>,
+    /// Can the contract be instantiated, i.e. not abstract, no errors, etc.
+    pub instantiable: bool,
+    /// Account of deployed program code on Solana
+    pub program_id: Option<Vec<u8>>,
 }
 
 impl Contract {
@@ -610,14 +855,17 @@ impl Contract {
 
     /// Does the constructor require arguments. Should be false is there is no constructor
     pub fn constructor_needs_arguments(&self, ns: &Namespace) -> bool {
-        self.have_constructor(ns) && self.no_args_constructor(ns).is_none()
+        !self.constructors(ns).is_empty() && self.no_args_constructor(ns).is_none()
     }
 
-    /// Does the contract have a constructor defined
-    pub fn have_constructor(&self, ns: &Namespace) -> bool {
+    /// Does the contract have a constructor defined?
+    /// Returns all the constructor function numbers if any
+    pub fn constructors(&self, ns: &Namespace) -> Vec<usize> {
         self.functions
             .iter()
-            .any(|func_no| ns.functions[*func_no].is_constructor())
+            .copied()
+            .filter(|func_no| ns.functions[*func_no].is_constructor())
+            .collect::<Vec<usize>>()
     }
 
     /// Return the constructor with no arguments
@@ -635,88 +883,322 @@ impl Contract {
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Expression {
-    BoolLiteral(pt::Loc, bool),
-    BytesLiteral(pt::Loc, Type, Vec<u8>),
-    CodeLiteral(pt::Loc, usize, bool),
-    NumberLiteral(pt::Loc, Type, BigInt),
-    RationalNumberLiteral(pt::Loc, Type, BigRational),
-    StructLiteral(pt::Loc, Type, Vec<Expression>),
-    ArrayLiteral(pt::Loc, Type, Vec<u32>, Vec<Expression>),
-    ConstArrayLiteral(pt::Loc, Type, Vec<u32>, Vec<Expression>),
-    Add(pt::Loc, Type, bool, Box<Expression>, Box<Expression>),
-    Subtract(pt::Loc, Type, bool, Box<Expression>, Box<Expression>),
-    Multiply(pt::Loc, Type, bool, Box<Expression>, Box<Expression>),
-    Divide(pt::Loc, Type, Box<Expression>, Box<Expression>),
-    Modulo(pt::Loc, Type, Box<Expression>, Box<Expression>),
-    Power(pt::Loc, Type, bool, Box<Expression>, Box<Expression>),
-    BitwiseOr(pt::Loc, Type, Box<Expression>, Box<Expression>),
-    BitwiseAnd(pt::Loc, Type, Box<Expression>, Box<Expression>),
-    BitwiseXor(pt::Loc, Type, Box<Expression>, Box<Expression>),
-    ShiftLeft(pt::Loc, Type, Box<Expression>, Box<Expression>),
-    ShiftRight(pt::Loc, Type, Box<Expression>, Box<Expression>, bool),
-    Variable(pt::Loc, Type, usize),
-    ConstantVariable(pt::Loc, Type, Option<usize>, usize),
-    StorageVariable(pt::Loc, Type, usize, usize),
-    Load(pt::Loc, Type, Box<Expression>),
-    GetRef(pt::Loc, Type, Box<Expression>),
-    StorageLoad(pt::Loc, Type, Box<Expression>),
-    ZeroExt(pt::Loc, Type, Box<Expression>),
-    SignExt(pt::Loc, Type, Box<Expression>),
-    Trunc(pt::Loc, Type, Box<Expression>),
-    CheckingTrunc(pt::Loc, Type, Box<Expression>),
-    Cast(pt::Loc, Type, Box<Expression>),
-    BytesCast(pt::Loc, Type, Type, Box<Expression>),
+    BoolLiteral {
+        loc: pt::Loc,
+        value: bool,
+    },
+    BytesLiteral {
+        loc: pt::Loc,
+        ty: Type,
+        value: Vec<u8>,
+    },
+    NumberLiteral {
+        loc: pt::Loc,
+        ty: Type,
+        value: BigInt,
+    },
+    RationalNumberLiteral {
+        loc: pt::Loc,
+        ty: Type,
+        value: BigRational,
+    },
+    StructLiteral {
+        loc: pt::Loc,
+        id: pt::IdentifierPath,
+        ty: Type,
+        /// pt::Identifier represents the field name
+        values: Vec<(Option<pt::Identifier>, Expression)>,
+    },
+    ArrayLiteral {
+        loc: pt::Loc,
+        ty: Type,
+        dimensions: Vec<u32>,
+        values: Vec<Expression>,
+    },
+    ConstArrayLiteral {
+        loc: pt::Loc,
+        ty: Type,
+        dimensions: Vec<u32>,
+        values: Vec<Expression>,
+    },
+    Add {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Subtract {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Multiply {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Divide {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Modulo {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Power {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        base: Box<Expression>,
+        exp: Box<Expression>,
+    },
+    BitwiseOr {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    BitwiseAnd {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    BitwiseXor {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    ShiftLeft {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    ShiftRight {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+        sign: bool,
+    },
+    Variable {
+        loc: pt::Loc,
+        ty: Type,
+        var_no: usize,
+    },
+    ConstantVariable {
+        loc: pt::Loc,
+        ty: Type,
+        contract_no: Option<usize>,
+        var_no: usize,
+    },
+    StorageVariable {
+        loc: pt::Loc,
+        ty: Type,
+        contract_no: usize,
+        var_no: usize,
+    },
+    Load {
+        loc: pt::Loc,
+        ty: Type,
+        expr: Box<Expression>,
+    },
+    GetRef {
+        loc: pt::Loc,
+        ty: Type,
+        expr: Box<Expression>,
+    },
+    StorageLoad {
+        loc: pt::Loc,
+        ty: Type,
+        expr: Box<Expression>,
+    },
+    ZeroExt {
+        loc: pt::Loc,
+        to: Type,
+        expr: Box<Expression>,
+    },
+    SignExt {
+        loc: pt::Loc,
+        to: Type,
+        expr: Box<Expression>,
+    },
+    Trunc {
+        loc: pt::Loc,
+        to: Type,
+        expr: Box<Expression>,
+    },
+    CheckingTrunc {
+        loc: pt::Loc,
+        to: Type,
+        expr: Box<Expression>,
+    },
+    Cast {
+        loc: pt::Loc,
+        to: Type,
+        expr: Box<Expression>,
+    },
+    BytesCast {
+        loc: pt::Loc,
+        from: Type,
+        to: Type,
+        expr: Box<Expression>,
+    },
+    PreIncrement {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        expr: Box<Expression>,
+    },
+    PreDecrement {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        expr: Box<Expression>,
+    },
+    PostIncrement {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        expr: Box<Expression>,
+    },
+    PostDecrement {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        expr: Box<Expression>,
+    },
+    Assign {
+        loc: pt::Loc,
+        ty: Type,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    More {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Less {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    MoreEqual {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    LessEqual {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Equal {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    NotEqual {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
 
-    PreIncrement(pt::Loc, Type, bool, Box<Expression>),
-    PreDecrement(pt::Loc, Type, bool, Box<Expression>),
-    PostIncrement(pt::Loc, Type, bool, Box<Expression>),
-    PostDecrement(pt::Loc, Type, bool, Box<Expression>),
-    Assign(pt::Loc, Type, Box<Expression>, Box<Expression>),
+    Not {
+        loc: pt::Loc,
+        expr: Box<Expression>,
+    },
+    BitwiseNot {
+        loc: pt::Loc,
+        ty: Type,
+        expr: Box<Expression>,
+    },
+    Negate {
+        loc: pt::Loc,
+        ty: Type,
+        /// Do not check for overflow, i.e. in `unchecked {}` block
+        unchecked: bool,
+        expr: Box<Expression>,
+    },
 
-    More(pt::Loc, Box<Expression>, Box<Expression>),
-    Less(pt::Loc, Box<Expression>, Box<Expression>),
-    MoreEqual(pt::Loc, Box<Expression>, Box<Expression>),
-    LessEqual(pt::Loc, Box<Expression>, Box<Expression>),
-    Equal(pt::Loc, Box<Expression>, Box<Expression>),
-    NotEqual(pt::Loc, Box<Expression>, Box<Expression>),
+    ConditionalOperator {
+        loc: pt::Loc,
+        ty: Type,
+        cond: Box<Expression>,
+        true_option: Box<Expression>,
+        false_option: Box<Expression>,
+    },
+    Subscript {
+        loc: pt::Loc,
+        ty: Type,
+        array_ty: Type,
+        array: Box<Expression>,
+        index: Box<Expression>,
+    },
+    NamedMember {
+        loc: pt::Loc,
+        ty: Type,
+        array: Box<Expression>,
+        name: String,
+    },
+    StructMember {
+        loc: pt::Loc,
+        ty: Type,
+        expr: Box<Expression>,
+        field: usize,
+    },
 
-    Not(pt::Loc, Box<Expression>),
-    Complement(pt::Loc, Type, Box<Expression>),
-    UnaryMinus(pt::Loc, Type, Box<Expression>),
-
-    Ternary(
-        pt::Loc,
-        Type,
-        Box<Expression>,
-        Box<Expression>,
-        Box<Expression>,
-    ),
-    Subscript(pt::Loc, Type, Type, Box<Expression>, Box<Expression>),
-    StructMember(pt::Loc, Type, Box<Expression>, usize),
-
-    AllocDynamicArray(pt::Loc, Type, Box<Expression>, Option<Vec<u8>>),
+    AllocDynamicBytes {
+        loc: pt::Loc,
+        ty: Type,
+        length: Box<Expression>,
+        init: Option<Vec<u8>>,
+    },
     StorageArrayLength {
         loc: pt::Loc,
         ty: Type,
         array: Box<Expression>,
         elem_ty: Type,
     },
-    StringCompare(
-        pt::Loc,
-        StringLocation<Expression>,
-        StringLocation<Expression>,
-    ),
-    StringConcat(
-        pt::Loc,
-        Type,
-        StringLocation<Expression>,
-        StringLocation<Expression>,
-    ),
+    StringCompare {
+        loc: pt::Loc,
+        left: StringLocation<Expression>,
+        right: StringLocation<Expression>,
+    },
 
-    Or(pt::Loc, Box<Expression>, Box<Expression>),
-    And(pt::Loc, Box<Expression>, Box<Expression>),
+    Or {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    And {
+        loc: pt::Loc,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
     InternalFunction {
         loc: pt::Loc,
+        id: pt::IdentifierPath,
         ty: Type,
         function_no: usize,
         signature: Option<String>,
@@ -754,10 +1236,36 @@ pub enum Expression {
         args: Vec<Expression>,
         call_args: CallArgs,
     },
-    FormatString(pt::Loc, Vec<(FormatArg, Expression)>),
-    Builtin(pt::Loc, Vec<Type>, Builtin, Vec<Expression>),
-    InterfaceId(pt::Loc, usize),
-    List(pt::Loc, Vec<Expression>),
+    FormatString {
+        loc: pt::Loc,
+        format: Vec<(FormatArg, Expression)>,
+    },
+    Builtin {
+        loc: pt::Loc,
+        tys: Vec<Type>,
+        kind: Builtin,
+        args: Vec<Expression>,
+    },
+    List {
+        loc: pt::Loc,
+        list: Vec<Expression>,
+    },
+    UserDefinedOperator {
+        loc: pt::Loc,
+        ty: Type,
+        oper: pt::UserDefinedOperator,
+        function_no: usize,
+        args: Vec<Expression>,
+    },
+    EventSelector {
+        loc: pt::Loc,
+        ty: Type,
+        event_no: usize,
+    },
+    TypeOperator {
+        loc: pt::Loc,
+        ty: Type,
+    },
 }
 
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
@@ -765,25 +1273,86 @@ pub struct CallArgs {
     pub gas: Option<Box<Expression>>,
     pub salt: Option<Box<Expression>>,
     pub value: Option<Box<Expression>>,
-    pub space: Option<Box<Expression>>,
-    pub accounts: Option<Box<Expression>>,
+    pub accounts: ExternalCallAccounts<Box<Expression>>,
     pub seeds: Option<Box<Expression>>,
+    pub flags: Option<Box<Expression>>,
+    pub program_id: Option<Box<Expression>>,
+}
+
+/// This enum manages the accounts in an external call on Solana. There can be three options:
+/// 1. The developer explicitly specifies there are not accounts for the call (`NoAccount`).
+/// 2. The accounts call argument is absent, in which case we attempt to generate the AccountMetas
+///    vector automatically (`AbsentArgumet`).
+/// 3. There are accounts specified in the accounts call argument (Present).
+#[derive(PartialEq, Eq, Clone, Debug, Default)]
+pub enum ExternalCallAccounts<T> {
+    NoAccount,
+    #[default]
+    AbsentArgument,
+    Present(T),
+}
+
+impl<T> ExternalCallAccounts<T> {
+    /// Is the accounts call argument missing?
+    pub fn is_absent(&self) -> bool {
+        matches!(self, ExternalCallAccounts::AbsentArgument)
+    }
+
+    /// Returns if the accounts call argument was present in the call
+    pub fn argument_provided(&self) -> bool {
+        matches!(
+            self,
+            ExternalCallAccounts::Present(_) | ExternalCallAccounts::NoAccount
+        )
+    }
+
+    /// Applies a function on the nested objects
+    pub fn map<P, F>(&self, func: F) -> ExternalCallAccounts<P>
+    where
+        F: FnOnce(&T) -> P,
+    {
+        match self {
+            NoAccount => NoAccount,
+            AbsentArgument => AbsentArgument,
+            ExternalCallAccounts::Present(value) => ExternalCallAccounts::Present(func(value)),
+        }
+    }
+
+    /// Transform the nested object into a reference
+    pub const fn as_ref(&self) -> ExternalCallAccounts<&T> {
+        match self {
+            ExternalCallAccounts::Present(value) => ExternalCallAccounts::Present(value),
+            NoAccount => NoAccount,
+            AbsentArgument => AbsentArgument,
+        }
+    }
+
+    /// Return a reference to the nested object
+    pub fn unwrap(&self) -> &T {
+        match self {
+            ExternalCallAccounts::Present(value) => value,
+            _ => panic!("unwrap called at variant without a nested object"),
+        }
+    }
 }
 
 impl Recurse for CallArgs {
     type ArgType = Expression;
     fn recurse<T>(&self, cx: &mut T, f: fn(expr: &Expression, ctx: &mut T) -> bool) {
         if let Some(gas) = &self.gas {
-            f(gas, cx);
+            gas.recurse(cx, f);
         }
         if let Some(salt) = &self.salt {
-            f(salt, cx);
+            salt.recurse(cx, f);
         }
         if let Some(value) = &self.value {
-            f(value, cx);
+            value.recurse(cx, f);
         }
-        if let Some(accounts) = &self.accounts {
-            f(accounts, cx);
+        if let ExternalCallAccounts::Present(accounts) = &self.accounts {
+            accounts.recurse(cx, f);
+        }
+        if let Some(flags) = &self.flags {
+            flags.recurse(cx, f);
         }
     }
 }
@@ -793,78 +1362,94 @@ impl Recurse for Expression {
     fn recurse<T>(&self, cx: &mut T, f: fn(expr: &Expression, ctx: &mut T) -> bool) {
         if f(self, cx) {
             match self {
-                Expression::StructLiteral(_, _, exprs)
-                | Expression::ArrayLiteral(_, _, _, exprs)
-                | Expression::ConstArrayLiteral(_, _, _, exprs) => {
-                    for e in exprs {
+                Expression::StructLiteral { values, .. } => {
+                    for (_, e) in values {
                         e.recurse(cx, f);
                     }
                 }
-                Expression::Add(_, _, _, left, right)
-                | Expression::Subtract(_, _, _, left, right)
-                | Expression::Multiply(_, _, _, left, right)
-                | Expression::Divide(_, _, left, right)
-                | Expression::Modulo(_, _, left, right)
-                | Expression::Power(_, _, _, left, right)
-                | Expression::BitwiseOr(_, _, left, right)
-                | Expression::BitwiseAnd(_, _, left, right)
-                | Expression::BitwiseXor(_, _, left, right)
-                | Expression::ShiftLeft(_, _, left, right)
-                | Expression::ShiftRight(_, _, left, right, _) => {
+
+                Expression::ArrayLiteral { values, .. }
+                | Expression::ConstArrayLiteral { values, .. } => {
+                    for e in values {
+                        e.recurse(cx, f);
+                    }
+                }
+
+                Expression::Load { expr, .. }
+                | Expression::StorageLoad { expr, .. }
+                | Expression::ZeroExt { expr, .. }
+                | Expression::SignExt { expr, .. }
+                | Expression::Trunc { expr, .. }
+                | Expression::CheckingTrunc { expr, .. }
+                | Expression::Cast { expr, .. }
+                | Expression::BytesCast { expr, .. }
+                | Expression::PreIncrement { expr, .. }
+                | Expression::PreDecrement { expr, .. }
+                | Expression::PostIncrement { expr, .. }
+                | Expression::PostDecrement { expr, .. }
+                | Expression::Not { expr, .. }
+                | Expression::BitwiseNot { expr, .. }
+                | Expression::Negate { expr, .. }
+                | Expression::GetRef { expr, .. }
+                | Expression::NamedMember { array: expr, .. }
+                | Expression::StructMember { expr, .. } => expr.recurse(cx, f),
+
+                Expression::Add { left, right, .. }
+                | Expression::Subtract { left, right, .. }
+                | Expression::Multiply { left, right, .. }
+                | Expression::Divide { left, right, .. }
+                | Expression::Modulo { left, right, .. }
+                | Expression::Power {
+                    base: left,
+                    exp: right,
+                    ..
+                }
+                | Expression::BitwiseOr { left, right, .. }
+                | Expression::BitwiseAnd { left, right, .. }
+                | Expression::BitwiseXor { left, right, .. }
+                | Expression::ShiftLeft { left, right, .. }
+                | Expression::ShiftRight { left, right, .. }
+                | Expression::Assign { left, right, .. }
+                | Expression::More { left, right, .. }
+                | Expression::Less { left, right, .. }
+                | Expression::MoreEqual { left, right, .. }
+                | Expression::LessEqual { left, right, .. }
+                | Expression::Equal { left, right, .. }
+                | Expression::NotEqual { left, right, .. }
+                | Expression::Or { left, right, .. }
+                | Expression::And { left, right, .. } => {
                     left.recurse(cx, f);
                     right.recurse(cx, f);
                 }
-                Expression::Load(_, _, expr)
-                | Expression::StorageLoad(_, _, expr)
-                | Expression::ZeroExt(_, _, expr)
-                | Expression::SignExt(_, _, expr)
-                | Expression::Trunc(_, _, expr)
-                | Expression::Cast(_, _, expr)
-                | Expression::BytesCast(_, _, _, expr)
-                | Expression::PreIncrement(_, _, _, expr)
-                | Expression::PreDecrement(_, _, _, expr)
-                | Expression::PostIncrement(_, _, _, expr)
-                | Expression::PostDecrement(_, _, _, expr) => expr.recurse(cx, f),
 
-                Expression::Assign(_, _, left, right)
-                | Expression::More(_, left, right)
-                | Expression::Less(_, left, right)
-                | Expression::MoreEqual(_, left, right)
-                | Expression::LessEqual(_, left, right)
-                | Expression::Equal(_, left, right)
-                | Expression::NotEqual(_, left, right) => {
-                    left.recurse(cx, f);
-                    right.recurse(cx, f);
-                }
-                Expression::Not(_, expr)
-                | Expression::Complement(_, _, expr)
-                | Expression::UnaryMinus(_, _, expr) => expr.recurse(cx, f),
-
-                Expression::Ternary(_, _, cond, left, right) => {
+                Expression::ConditionalOperator {
+                    cond,
+                    true_option: left,
+                    false_option: right,
+                    ..
+                } => {
                     cond.recurse(cx, f);
                     left.recurse(cx, f);
                     right.recurse(cx, f);
                 }
-                Expression::Subscript(_, _, _, left, right) => {
+                Expression::Subscript {
+                    array: left,
+                    index: right,
+                    ..
+                } => {
                     left.recurse(cx, f);
                     right.recurse(cx, f);
                 }
-                Expression::StructMember(_, _, expr, _) => expr.recurse(cx, f),
 
-                Expression::AllocDynamicArray(_, _, expr, _) => expr.recurse(cx, f),
+                Expression::AllocDynamicBytes { length, .. } => length.recurse(cx, f),
                 Expression::StorageArrayLength { array, .. } => array.recurse(cx, f),
-                Expression::StringCompare(_, left, right)
-                | Expression::StringConcat(_, _, left, right) => {
+                Expression::StringCompare { left, right, .. } => {
                     if let StringLocation::RunTime(expr) = left {
                         expr.recurse(cx, f);
                     }
                     if let StringLocation::RunTime(expr) = right {
                         expr.recurse(cx, f);
                     }
-                }
-                Expression::Or(_, left, right) | Expression::And(_, left, right) => {
-                    left.recurse(cx, f);
-                    right.recurse(cx, f);
                 }
                 Expression::InternalFunctionCall { function, args, .. } => {
                     function.recurse(cx, f);
@@ -906,12 +1491,30 @@ impl Recurse for Expression {
                     }
                     call_args.recurse(cx, f);
                 }
-                Expression::Builtin(_, _, _, exprs) | Expression::List(_, exprs) => {
+                Expression::UserDefinedOperator { args: exprs, .. }
+                | Expression::Builtin { args: exprs, .. }
+                | Expression::List { list: exprs, .. } => {
                     for e in exprs {
                         e.recurse(cx, f);
                     }
                 }
-                _ => (),
+
+                Expression::FormatString { format, .. } => {
+                    for (_, arg) in format {
+                        arg.recurse(cx, f);
+                    }
+                }
+
+                Expression::NumberLiteral { .. }
+                | Expression::InternalFunction { .. }
+                | Expression::ConstantVariable { .. }
+                | Expression::StorageVariable { .. }
+                | Expression::Variable { .. }
+                | Expression::RationalNumberLiteral { .. }
+                | Expression::BytesLiteral { .. }
+                | Expression::BoolLiteral { .. }
+                | Expression::EventSelector { .. }
+                | Expression::TypeOperator { .. } => (),
             }
         }
     }
@@ -920,70 +1523,71 @@ impl Recurse for Expression {
 impl CodeLocation for Expression {
     fn loc(&self) -> pt::Loc {
         match self {
-            Expression::BoolLiteral(loc, _)
-            | Expression::BytesLiteral(loc, ..)
-            | Expression::CodeLiteral(loc, ..)
-            | Expression::NumberLiteral(loc, ..)
-            | Expression::RationalNumberLiteral(loc, ..)
-            | Expression::StructLiteral(loc, ..)
-            | Expression::ArrayLiteral(loc, ..)
-            | Expression::ConstArrayLiteral(loc, ..)
-            | Expression::Add(loc, ..)
-            | Expression::Subtract(loc, ..)
-            | Expression::Multiply(loc, ..)
-            | Expression::Divide(loc, ..)
-            | Expression::Modulo(loc, ..)
-            | Expression::Power(loc, ..)
-            | Expression::BitwiseOr(loc, ..)
-            | Expression::BitwiseAnd(loc, ..)
-            | Expression::BitwiseXor(loc, ..)
-            | Expression::ShiftLeft(loc, ..)
-            | Expression::ShiftRight(loc, ..)
-            | Expression::Variable(loc, ..)
-            | Expression::ConstantVariable(loc, ..)
-            | Expression::StorageVariable(loc, ..)
-            | Expression::Load(loc, ..)
-            | Expression::GetRef(loc, ..)
-            | Expression::StorageLoad(loc, ..)
-            | Expression::ZeroExt(loc, ..)
-            | Expression::SignExt(loc, ..)
-            | Expression::Trunc(loc, ..)
-            | Expression::CheckingTrunc(loc, ..)
-            | Expression::Cast(loc, ..)
-            | Expression::BytesCast(loc, ..)
-            | Expression::More(loc, ..)
-            | Expression::Less(loc, ..)
-            | Expression::MoreEqual(loc, ..)
-            | Expression::LessEqual(loc, ..)
-            | Expression::Equal(loc, ..)
-            | Expression::NotEqual(loc, ..)
-            | Expression::Not(loc, _)
-            | Expression::Complement(loc, ..)
-            | Expression::UnaryMinus(loc, ..)
-            | Expression::Ternary(loc, ..)
-            | Expression::Subscript(loc, ..)
-            | Expression::StructMember(loc, ..)
-            | Expression::Or(loc, ..)
-            | Expression::AllocDynamicArray(loc, ..)
+            Expression::BoolLiteral { loc, .. }
+            | Expression::BytesLiteral { loc, .. }
+            | Expression::NumberLiteral { loc, .. }
+            | Expression::RationalNumberLiteral { loc, .. }
+            | Expression::StructLiteral { loc, .. }
+            | Expression::ArrayLiteral { loc, .. }
+            | Expression::ConstArrayLiteral { loc, .. }
+            | Expression::Add { loc, .. }
+            | Expression::Subtract { loc, .. }
+            | Expression::Multiply { loc, .. }
+            | Expression::Divide { loc, .. }
+            | Expression::Modulo { loc, .. }
+            | Expression::Power { loc, .. }
+            | Expression::BitwiseOr { loc, .. }
+            | Expression::BitwiseAnd { loc, .. }
+            | Expression::BitwiseXor { loc, .. }
+            | Expression::ShiftLeft { loc, .. }
+            | Expression::ShiftRight { loc, .. }
+            | Expression::Variable { loc, .. }
+            | Expression::ConstantVariable { loc, .. }
+            | Expression::StorageVariable { loc, .. }
+            | Expression::Load { loc, .. }
+            | Expression::GetRef { loc, .. }
+            | Expression::StorageLoad { loc, .. }
+            | Expression::ZeroExt { loc, .. }
+            | Expression::SignExt { loc, .. }
+            | Expression::Trunc { loc, .. }
+            | Expression::CheckingTrunc { loc, .. }
+            | Expression::Cast { loc, .. }
+            | Expression::BytesCast { loc, .. }
+            | Expression::More { loc, .. }
+            | Expression::Less { loc, .. }
+            | Expression::MoreEqual { loc, .. }
+            | Expression::LessEqual { loc, .. }
+            | Expression::Equal { loc, .. }
+            | Expression::NotEqual { loc, .. }
+            | Expression::Not { loc, expr: _ }
+            | Expression::BitwiseNot { loc, .. }
+            | Expression::Negate { loc, .. }
+            | Expression::ConditionalOperator { loc, .. }
+            | Expression::Subscript { loc, .. }
+            | Expression::StructMember { loc, .. }
+            | Expression::Or { loc, .. }
+            | Expression::AllocDynamicBytes { loc, .. }
             | Expression::StorageArrayLength { loc, .. }
-            | Expression::StringCompare(loc, ..)
-            | Expression::StringConcat(loc, ..)
+            | Expression::StringCompare { loc, .. }
             | Expression::InternalFunction { loc, .. }
             | Expression::ExternalFunction { loc, .. }
             | Expression::InternalFunctionCall { loc, .. }
             | Expression::ExternalFunctionCall { loc, .. }
             | Expression::ExternalFunctionCallRaw { loc, .. }
             | Expression::Constructor { loc, .. }
-            | Expression::PreIncrement(loc, ..)
-            | Expression::PreDecrement(loc, ..)
-            | Expression::PostIncrement(loc, ..)
-            | Expression::PostDecrement(loc, ..)
-            | Expression::Builtin(loc, ..)
-            | Expression::Assign(loc, ..)
-            | Expression::List(loc, _)
-            | Expression::FormatString(loc, _)
-            | Expression::InterfaceId(loc, ..)
-            | Expression::And(loc, ..) => *loc,
+            | Expression::PreIncrement { loc, .. }
+            | Expression::PreDecrement { loc, .. }
+            | Expression::PostIncrement { loc, .. }
+            | Expression::PostDecrement { loc, .. }
+            | Expression::Builtin { loc, .. }
+            | Expression::Assign { loc, .. }
+            | Expression::List { loc, list: _ }
+            | Expression::FormatString { loc, format: _ }
+            | Expression::And { loc, .. }
+            | Expression::NamedMember { loc, .. }
+            | Expression::UserDefinedOperator { loc, .. }
+            | Expression::EventSelector { loc, .. }
+            | Expression::TypeOperator { loc, .. } => *loc,
         }
     }
 }
@@ -1002,11 +1606,12 @@ impl CodeLocation for Statement {
             | Statement::Destructure(loc, ..)
             | Statement::Continue(loc, ..)
             | Statement::Break(loc, ..)
+            | Statement::Revert { loc, .. }
             | Statement::Return(loc, ..)
             | Statement::Emit { loc, .. }
             | Statement::TryCatch(loc, ..)
             | Statement::Underscore(loc, ..) => *loc,
-            Statement::Assembly(..) => pt::Loc::Codegen,
+            Statement::Assembly(ia, _) => ia.loc,
         }
     }
 }
@@ -1019,26 +1624,28 @@ impl CodeLocation for Instr {
                 _ => expr.loc(),
             },
             Instr::Call { args, .. } if args.is_empty() => pt::Loc::Codegen,
-            Instr::Call { args, .. } => args[0].loc(),
             Instr::Return { value } if value.is_empty() => pt::Loc::Codegen,
-            Instr::Return { value } => value[0].loc(),
-            Instr::EmitEvent { data, .. } if data.is_empty() => pt::Loc::Codegen,
-            Instr::EmitEvent { data, .. } => data[0].loc(),
-            Instr::BranchCond { cond, .. } => cond.loc(),
-            Instr::Store { dest, .. } => dest.loc(),
-            Instr::SetStorageBytes { storage, .. }
-            | Instr::PushStorage { storage, .. }
-            | Instr::PopStorage { storage, .. }
-            | Instr::LoadStorage { storage, .. }
-            | Instr::ClearStorage { storage, .. } => storage.loc(),
-            Instr::ExternalCall { value, .. } | Instr::SetStorage { value, .. } => value.loc(),
-            Instr::PushMemory { value, .. } => value.loc(),
-            Instr::Constructor { gas, .. } => gas.loc(),
-            Instr::ValueTransfer { address, .. } => address.loc(),
-            Instr::AbiDecode { data, .. } => data.loc(),
-            Instr::SelfDestruct { recipient } => recipient.loc(),
-            Instr::WriteBuffer { buf, .. } => buf.loc(),
-            Instr::Print { expr } => expr.loc(),
+            Instr::Call { args: arr, .. } | Instr::Return { value: arr } => arr[0].loc(),
+            Instr::EmitEvent { data: expr, .. }
+            | Instr::BranchCond { cond: expr, .. }
+            | Instr::Store { dest: expr, .. }
+            | Instr::SetStorageBytes { storage: expr, .. }
+            | Instr::PushStorage { storage: expr, .. }
+            | Instr::PopStorage { storage: expr, .. }
+            | Instr::LoadStorage { storage: expr, .. }
+            | Instr::ClearStorage { storage: expr, .. }
+            | Instr::ExternalCall { value: expr, .. }
+            | Instr::SetStorage { value: expr, .. }
+            | Instr::Constructor { gas: expr, .. }
+            | Instr::ValueTransfer { address: expr, .. }
+            | Instr::SelfDestruct { recipient: expr }
+            | Instr::WriteBuffer { buf: expr, .. }
+            | Instr::Switch { cond: expr, .. }
+            | Instr::ReturnData { data: expr, .. }
+            | Instr::Print { expr } => expr.loc(),
+
+            Instr::PushMemory { value: expr, .. } => expr.loc(),
+
             Instr::MemCopy {
                 source,
                 destination,
@@ -1048,10 +1655,13 @@ impl CodeLocation for Instr {
                 _ => destination.loc(),
             },
             Instr::Branch { .. }
-            | Instr::Unreachable
+            | Instr::ReturnCode { .. }
             | Instr::Nop
             | Instr::AssertFailure { .. }
-            | Instr::PopMemory { .. } => pt::Loc::Codegen,
+            | Instr::PopMemory { .. }
+            | Instr::Unimplemented { .. } => pt::Loc::Codegen,
+
+            Instr::AccountAccess { loc, .. } => *loc,
         }
     }
 }
@@ -1083,6 +1693,7 @@ pub enum StringLocation<T> {
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Builtin {
+    ContractCode,
     GetAddress,
     Balance,
     PayableSend,
@@ -1092,7 +1703,6 @@ pub enum Builtin {
     ArrayLength,
     Assert,
     Print,
-    Revert,
     Require,
     SelfDestruct,
     Keccak256,
@@ -1100,13 +1710,14 @@ pub enum Builtin {
     Sha256,
     Blake2_128,
     Blake2_256,
+    BaseFee,
+    PrevRandao,
     Gasleft,
     BlockCoinbase,
     BlockDifficulty,
     GasLimit,
     BlockNumber,
     Slot,
-    ProgramId,
     Timestamp,
     Calldata,
     Sender,
@@ -1115,9 +1726,7 @@ pub enum Builtin {
     Gasprice,
     Origin,
     BlockHash,
-    Random,
     MinimumBalance,
-    TombstoneDeposit,
     AbiDecode,
     AbiEncode,
     AbiEncodePacked,
@@ -1126,6 +1735,7 @@ pub enum Builtin {
     AbiEncodeCall,
     MulMod,
     AddMod,
+    ChainId,
     ExternalFunctionAddress,
     FunctionSelector,
     SignatureVerify,
@@ -1155,9 +1765,24 @@ pub enum Builtin {
     WriteUint128LE,
     WriteUint256LE,
     WriteAddress,
+    WriteString,
+    WriteBytes,
     Accounts,
     UserTypeWrap,
     UserTypeUnwrap,
+    ECRecover,
+    StringConcat,
+    BytesConcat,
+    TypeMin,
+    TypeMax,
+    TypeName,
+    TypeInterfaceId,
+    TypeRuntimeCode,
+    TypeCreatorCode,
+    RequireAuth,
+    AuthAsCurrContract,
+    ExtendTtl,
+    ExtendInstanceTtl,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -1185,7 +1810,7 @@ pub enum Statement {
         unchecked: bool,
         statements: Vec<Statement>,
     },
-    VariableDecl(pt::Loc, usize, Parameter, Option<Arc<Expression>>),
+    VariableDecl(pt::Loc, usize, Parameter<Type>, Option<Arc<Expression>>),
     If(pt::Loc, bool, Expression, Vec<Statement>, Vec<Statement>),
     While(pt::Loc, bool, Expression, Vec<Statement>),
     For {
@@ -1193,7 +1818,7 @@ pub enum Statement {
         reachable: bool,
         init: Vec<Statement>,
         cond: Option<Expression>,
-        next: Vec<Statement>,
+        next: Option<Expression>,
         body: Vec<Statement>,
     },
     DoWhile(pt::Loc, bool, Vec<Statement>, Expression),
@@ -1203,6 +1828,11 @@ pub enum Statement {
     Continue(pt::Loc),
     Break(pt::Loc),
     Return(pt::Loc, Option<Expression>),
+    Revert {
+        loc: pt::Loc,
+        error_no: Option<usize>,
+        args: Vec<Expression>,
+    },
     Emit {
         loc: pt::Loc,
         event_no: usize,
@@ -1217,12 +1847,17 @@ pub enum Statement {
 #[derive(Clone, Debug)]
 pub struct TryCatch {
     pub expr: Expression,
-    pub returns: Vec<(Option<usize>, Parameter)>,
+    pub returns: Vec<(Option<usize>, Parameter<Type>)>,
     pub ok_stmt: Vec<Statement>,
-    pub errors: Vec<(Option<usize>, Parameter, Vec<Statement>)>,
-    pub catch_param: Option<Parameter>,
-    pub catch_param_pos: Option<usize>,
-    pub catch_stmt: Vec<Statement>,
+    pub errors: Vec<CatchClause>,
+    pub catch_all: Option<CatchClause>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CatchClause {
+    pub param: Option<Parameter<Type>>,
+    pub param_pos: Option<usize>,
+    pub stmt: Vec<Statement>,
 }
 
 #[derive(Clone, Debug)]
@@ -1230,11 +1865,11 @@ pub struct TryCatch {
 pub enum DestructureField {
     None,
     Expression(Expression),
-    VariableDecl(usize, Parameter),
+    VariableDecl(usize, Parameter<Type>),
 }
 
 impl OptionalCodeLocation for DestructureField {
-    fn loc(&self) -> Option<pt::Loc> {
+    fn loc_opt(&self) -> Option<pt::Loc> {
         match self {
             DestructureField::None => None,
             DestructureField::Expression(e) => Some(e.loc()),
@@ -1262,18 +1897,12 @@ impl Recurse for Statement {
                         stmt.recurse(cx, f);
                     }
                 }
-                Statement::For {
-                    init, next, body, ..
-                } => {
+                Statement::For { init, body, .. } => {
                     for stmt in init {
                         stmt.recurse(cx, f);
                     }
 
                     for stmt in body {
-                        stmt.recurse(cx, f);
-                    }
-
-                    for stmt in next {
                         stmt.recurse(cx, f);
                     }
                 }
@@ -1292,14 +1921,16 @@ impl Recurse for Statement {
                         stmt.recurse(cx, f);
                     }
 
-                    for error_stmt in &try_catch.errors {
-                        for stmt in &error_stmt.2 {
+                    for clause in &try_catch.errors {
+                        for stmt in &clause.stmt {
                             stmt.recurse(cx, f);
                         }
                     }
 
-                    for stmt in &try_catch.catch_stmt {
-                        stmt.recurse(cx, f);
+                    if let Some(clause) = try_catch.catch_all.as_ref() {
+                        for stmt in &clause.stmt {
+                            stmt.recurse(cx, f);
+                        }
                     }
                 }
                 _ => (),
@@ -1323,7 +1954,10 @@ impl Statement {
             | Statement::Emit { .. }
             | Statement::Delete(..) => true,
 
-            Statement::Continue(_) | Statement::Break(_) | Statement::Return(..) => false,
+            Statement::Continue(_)
+            | Statement::Break(_)
+            | Statement::Return(..)
+            | Statement::Revert { .. } => false,
 
             Statement::If(_, reachable, ..)
             | Statement::While(_, reachable, ..)
@@ -1338,6 +1972,7 @@ impl Statement {
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Tag {
+    pub loc: pt::Loc,
     pub tag: String,
     pub no: usize,
     pub value: String,

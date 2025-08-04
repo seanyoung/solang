@@ -1,32 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use super::{
+    annotions_not_allowed,
+    ast::{self},
+    diagnostics::Diagnostics,
+    expression::{compatible_mutability, ExprContext},
+    functions, statements,
+    symtable::Symtable,
+    using, variables, ContractDefinition,
+};
+use crate::sema::ast::SolanaAccount;
+use crate::sema::expression::constructor::match_constructor_to_args;
+use crate::{sema::ast::Namespace, sema::unused_variable::emit_warning_local_variable};
+use indexmap::{IndexMap, IndexSet};
 use num_bigint::BigInt;
 use num_traits::Zero;
-use solang_parser::{
-    doccomment::parse_doccomments,
-    pt::{self, CodeLocation, Statement},
-};
+use once_cell::unsync::OnceCell;
+use solang_parser::diagnostics::{Diagnostic, Note};
+use solang_parser::pt::FunctionTy;
+use solang_parser::pt::{self, CodeLocation};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
 use tiny_keccak::{Hasher, Keccak};
 
-use super::{
-    ast,
-    diagnostics::Diagnostics,
-    expression::{compatible_mutability, match_constructor_to_args, ExprContext},
-    functions, statements,
-    symtable::Symtable,
-    using, variables,
-};
-#[cfg(feature = "llvm")]
-use crate::emit;
-use crate::sema::unused_variable::emit_warning_local_variable;
-
 impl ast::Contract {
     /// Create a new contract, abstract contract, interface or library
-    pub fn new(name: &str, ty: pt::ContractTy, tags: Vec<ast::Tag>, loc: pt::Loc) -> Self {
+    pub fn new(
+        name: &pt::Identifier,
+        ty: pt::ContractTy,
+        tags: Vec<ast::Tag>,
+        loc: pt::Loc,
+    ) -> Self {
+        let instantiable = matches!(ty, pt::ContractTy::Contract(_));
+
         ast::Contract {
-            name: name.to_owned(),
+            id: name.clone(),
             loc,
             ty,
             bases: Vec::new(),
@@ -40,41 +48,21 @@ impl ast::Contract {
             virtual_functions: HashMap::new(),
             variables: Vec::new(),
             creates: Vec::new(),
-            sends_events: Vec::new(),
+            emits_events: Vec::new(),
             initializer: None,
             default_constructor: None,
             cfg: Vec::new(),
-            code: Vec::new(),
+            code: OnceCell::new(),
+            instantiable,
+            program_id: None,
         }
-    }
-
-    /// Generate contract code for this contract
-    #[cfg(feature = "llvm")]
-    pub fn emit<'a>(
-        &'a self,
-        ns: &'a ast::Namespace,
-        context: &'a inkwell::context::Context,
-        filename: &'a str,
-        opt: inkwell::OptimizationLevel,
-        math_overflow_check: bool,
-        generate_debug_info: bool,
-    ) -> emit::binary::Binary {
-        emit::binary::Binary::build(
-            context,
-            self,
-            ns,
-            filename,
-            opt,
-            math_overflow_check,
-            generate_debug_info,
-        )
     }
 
     /// Selector for this contract. This is used by Solana contract bundle
     pub fn selector(&self) -> u32 {
         let mut hasher = Keccak::v256();
         let mut hash = [0u8; 32];
-        hasher.update(self.name.as_bytes());
+        hasher.update(self.id.name.as_bytes());
         hasher.finalize(&mut hash);
 
         u32::from_le_bytes(hash[0..4].try_into().unwrap())
@@ -82,28 +70,31 @@ impl ast::Contract {
 }
 
 /// Resolve the following contract
-pub fn resolve(
-    contracts: &[(usize, &pt::ContractDefinition)],
-    comments: &[pt::Comment],
-    file_no: usize,
-    ns: &mut ast::Namespace,
-) {
-    resolve_using(contracts, file_no, ns);
-
+pub fn resolve(contracts: &[ContractDefinition], file_no: usize, ns: &mut ast::Namespace) {
     // we need to resolve declarations first, so we call functions/constructors of
     // contracts before they are declared
     let mut delayed: ResolveLater = Default::default();
 
-    for (contract_no, def) in contracts {
-        resolve_declarations(def, comments, file_no, *contract_no, ns, &mut delayed);
+    for def in contracts {
+        resolve_declarations(def, file_no, ns, &mut delayed);
     }
+
+    // using may use functions declared in contracts
+    resolve_using(contracts, file_no, ns);
 
     // Resolve base contract constructor arguments on contract definition (not constructor definitions)
     resolve_base_args(contracts, file_no, ns);
 
     // Now we have all the declarations, we can handle base contracts
-    for (contract_no, _) in contracts {
-        check_inheritance(*contract_no, ns);
+    for contract in contracts {
+        let contract_no = contract.contract_no;
+
+        check_inheritance(contract_no, ns);
+        mangle_function_names(contract_no, ns);
+        verify_unique_selector(contract_no, ns);
+        polkadot_requires_public_functions(contract_no, ns);
+        unique_constructor_names(contract_no, ns);
+        check_mangled_function_names(contract_no, ns);
     }
 
     // Now we can resolve the initializers
@@ -112,8 +103,8 @@ pub fn resolve(
     // Now we can resolve the bodies
     if !resolve_bodies(delayed.function_bodies, file_no, ns) {
         // only if we could resolve all the bodies
-        for (contract_no, _) in contracts {
-            check_base_args(*contract_no, ns);
+        for contract in contracts {
+            check_base_args(contract.contract_no, ns);
         }
     }
 }
@@ -121,32 +112,32 @@ pub fn resolve(
 /// Resolve the base contracts list and check for cycles. Returns true if no
 /// issues where found.
 pub fn resolve_base_contracts(
-    contracts: &[(usize, &pt::ContractDefinition)],
+    contracts: &[ContractDefinition],
     file_no: usize,
     ns: &mut ast::Namespace,
 ) {
     let mut diagnostics = Diagnostics::default();
 
-    for (contract_no, def) in contracts {
-        for base in &def.base {
-            if ns.contracts[*contract_no].is_library() {
+    for contract in contracts {
+        for base in &contract.base {
+            if ns.contracts[contract.contract_no].is_library() {
                 ns.diagnostics.push(ast::Diagnostic::error(
                     base.loc,
                     format!(
                         "library '{}' cannot have a base contract",
-                        ns.contracts[*contract_no].name
+                        ns.contracts[contract.contract_no].id
                     ),
                 ));
                 continue;
             }
             let name = &base.name;
             if let Ok(no) = ns.resolve_contract_with_namespace(file_no, name, &mut diagnostics) {
-                if no == *contract_no {
+                if no == contract.contract_no {
                     ns.diagnostics.push(ast::Diagnostic::error(
                         name.loc,
-                        format!("contract '{}' cannot have itself as a base contract", name),
+                        format!("contract '{name}' cannot have itself as a base contract"),
                     ));
-                } else if ns.contracts[*contract_no]
+                } else if ns.contracts[contract.contract_no]
                     .bases
                     .iter()
                     .any(|e| e.contract_no == no)
@@ -155,42 +146,42 @@ pub fn resolve_base_contracts(
                         name.loc,
                         format!(
                             "contract '{}' duplicate base '{}'",
-                            ns.contracts[*contract_no].name, name
+                            ns.contracts[contract.contract_no].id, name
                         ),
                     ));
-                } else if is_base(*contract_no, no, ns) {
+                } else if is_base(contract.contract_no, no, ns) {
                     ns.diagnostics.push(ast::Diagnostic::error(
                         name.loc,
                         format!(
                             "base '{}' from contract '{}' is cyclic",
-                            name, ns.contracts[*contract_no].name
+                            name, ns.contracts[contract.contract_no].id
                         ),
                     ));
-                } else if ns.contracts[*contract_no].is_interface()
+                } else if ns.contracts[contract.contract_no].is_interface()
                     && !ns.contracts[no].is_interface()
                 {
                     ns.diagnostics.push(ast::Diagnostic::error(
                         name.loc,
                         format!(
                             "interface '{}' cannot have {} '{}' as a base",
-                            ns.contracts[*contract_no].name, ns.contracts[no].ty, name
+                            ns.contracts[contract.contract_no].id, ns.contracts[no].ty, name
                         ),
                     ));
                 } else if ns.contracts[no].is_library() {
-                    let contract = &ns.contracts[*contract_no];
+                    let contract = &ns.contracts[contract.contract_no];
 
                     ns.diagnostics.push(ast::Diagnostic::error(
                         name.loc,
                         format!(
                             "library '{}' cannot be used as base contract for {} '{}'",
-                            name, contract.ty, contract.name,
+                            name, contract.ty, contract.id,
                         ),
                     ));
                 } else {
                     // We do not resolve the constructor arguments here, since we have not
                     // resolved any variables. This means no constants can be used on base
                     // constructor args, so we delay this until resolve_base_args()
-                    ns.contracts[*contract_no].bases.push(ast::Base {
+                    ns.contracts[contract.contract_no].bases.push(ast::Base {
                         loc: base.loc,
                         contract_no: no,
                         constructor: None,
@@ -205,48 +196,41 @@ pub fn resolve_base_contracts(
 
 /// Resolve the base contracts list and check for cycles. Returns true if no
 /// issues where found.
-fn resolve_base_args(
-    contracts: &[(usize, &pt::ContractDefinition)],
-    file_no: usize,
-    ns: &mut ast::Namespace,
-) {
+fn resolve_base_args(contracts: &[ContractDefinition], file_no: usize, ns: &mut ast::Namespace) {
     let mut diagnostics = Diagnostics::default();
 
     // for every contract, if we have a base which resolved successfully, resolve any constructor args
-    for (contract_no, def) in contracts {
-        let context = ExprContext {
-            function_no: None,
-            contract_no: Some(*contract_no),
+    for contract in contracts {
+        let mut context = ExprContext {
             file_no,
-            unchecked: false,
-            constant: false,
-            lvalue: false,
-            yul_function: false,
+            contract_no: Some(contract.contract_no),
+            ..Default::default()
         };
+        context.enter_scope();
 
-        for base in &def.base {
+        for base in &contract.base {
             let name = &base.name;
             if let Ok(base_no) = ns.resolve_contract_with_namespace(file_no, name, &mut diagnostics)
             {
-                if let Some(pos) = ns.contracts[*contract_no]
+                if let Some(pos) = ns.contracts[contract.contract_no]
                     .bases
                     .iter()
                     .position(|e| e.contract_no == base_no)
                 {
                     if let Some(args) = &base.args {
-                        let mut symtable = Symtable::new();
+                        let mut symtable = Symtable::default();
 
                         // find constructor which matches this
                         if let Ok((Some(constructor_no), args)) = match_constructor_to_args(
                             &base.loc,
                             args,
                             base_no,
-                            &context,
+                            &mut context,
                             ns,
                             &mut symtable,
                             &mut diagnostics,
                         ) {
-                            ns.contracts[*contract_no].bases[pos].constructor =
+                            ns.contracts[contract.contract_no].bases[pos].constructor =
                                 Some((constructor_no, args));
                         }
                     }
@@ -280,10 +264,10 @@ impl ast::Namespace {
 }
 
 // Is a contract a base of another contract
-pub fn is_base(base: usize, parent: usize, ns: &ast::Namespace) -> bool {
-    let bases = &ns.contracts[parent].bases;
+pub fn is_base(base: usize, derived: usize, ns: &ast::Namespace) -> bool {
+    let bases = &ns.contracts[derived].bases;
 
-    if base == parent || bases.iter().any(|e| e.contract_no == base) {
+    if base == derived || bases.iter().any(|e| e.contract_no == base) {
         return true;
     }
 
@@ -297,6 +281,7 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
     let mut function_syms: HashMap<String, ast::Symbol> = HashMap::new();
     let mut variable_syms: HashMap<String, ast::Symbol> = HashMap::new();
     let mut override_needed: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
+    let mut diagnostics = Diagnostics::default();
 
     for base_contract_no in ns.contract_bases(contract_no) {
         // find file number where contract is defined
@@ -328,11 +313,11 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                         || sym.has_accessor(ns)
                         || prev.is_event() && sym.is_event())
                     {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
+                        diagnostics.push(ast::Diagnostic::error_with_note(
                             sym.loc(),
-                            format!("already defined '{}'", name),
+                            format!("already defined '{name}'"),
                             prev.loc(),
-                            format!("previous definition of '{}'", name),
+                            format!("previous definition of '{name}'"),
                         ));
                     }
                 }
@@ -363,10 +348,10 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                             None
                         } else {
                             Some(ast::Note {
-                                loc: func.loc,
+                                loc: func.loc_prototype,
                                 message: format!(
                                     "function '{}' is not specified 'virtual'",
-                                    func.name
+                                    func.id
                                 ),
                             })
                         }
@@ -374,11 +359,11 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                     .collect::<Vec<ast::Note>>();
 
                 if !non_virtual.is_empty() {
-                    ns.diagnostics.push(ast::Diagnostic::error_with_notes(
-                        cur.loc,
+                    diagnostics.push(ast::Diagnostic::error_with_notes(
+                        cur.loc_prototype,
                         format!(
                             "function '{}' overrides functions which are not 'virtual'",
-                            cur.name
+                            cur.id
                         ),
                         non_virtual,
                     ));
@@ -386,37 +371,37 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
 
                 let source_override = entry
                     .iter()
-                    .map(|(contract_no, _)| -> &str { &ns.contracts[*contract_no].name })
+                    .map(|(contract_no, _)| -> &str { &ns.contracts[*contract_no].id.name })
                     .collect::<Vec<&str>>()
                     .join(",");
 
                 if let Some((loc, override_specified)) = &cur.is_override {
                     if override_specified.is_empty() && entry.len() > 1 {
-                        ns.diagnostics.push(ast::Diagnostic::error(
+                        diagnostics.push(ast::Diagnostic::error(
                             *loc,
                             format!(
                                 "function '{}' should specify override list 'override({})'",
-                                cur.name, source_override
+                                cur.id, source_override
                             ),
                         ));
                     } else {
                         let override_specified: HashSet<usize> =
-                            override_specified.iter().cloned().collect();
+                            override_specified.iter().copied().collect();
                         let override_needed: HashSet<usize> =
                             entry.iter().map(|(contract_no, _)| *contract_no).collect();
 
                         // List of contract which should have been specified
                         let missing: Vec<String> = override_needed
                             .difference(&override_specified)
-                            .map(|contract_no| ns.contracts[*contract_no].name.to_owned())
+                            .map(|contract_no| ns.contracts[*contract_no].id.name.to_owned())
                             .collect();
 
                         if !missing.is_empty() && override_needed.len() >= 2 {
-                            ns.diagnostics.push(ast::Diagnostic::error(
+                            diagnostics.push(ast::Diagnostic::error(
                                 *loc,
                                 format!(
                                     "function '{}' missing overrides '{}', specify 'override({})'",
-                                    cur.name,
+                                    cur.id,
                                     missing.join(","),
                                     source_override
                                 ),
@@ -426,15 +411,15 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                         // List of contract which should not have been specified
                         let extra: Vec<String> = override_specified
                             .difference(&override_needed)
-                            .map(|contract_no| ns.contracts[*contract_no].name.to_owned())
+                            .map(|contract_no| ns.contracts[*contract_no].id.name.to_owned())
                             .collect();
 
                         if !extra.is_empty() {
-                            ns.diagnostics.push(ast::Diagnostic::error(
+                            diagnostics.push(ast::Diagnostic::error(
                                 *loc,
                                 format!(
                                     "function '{}' includes extraneous overrides '{}', specify 'override({})'",
-                                    cur.name,
+                                    cur.id,
                                     extra.join(","),
                                     source_override
                                 ),
@@ -445,26 +430,7 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                     for (_, function_no) in entry {
                         let func = &ns.functions[*function_no];
 
-                        if !func.is_accessor
-                            && !cur.is_accessor
-                            && !compatible_mutability(&cur.mutability, &func.mutability)
-                        {
-                            ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                                cur.loc,
-                                format!("mutability '{}' of function '{}' is not compatible with mutability '{}'", cur.mutability, cur.name, func.mutability),
-                                func.loc,
-                                String::from("location of base function")
-                            ));
-                        }
-
-                        if !compatible_visibility(&cur.visibility, &func.visibility) {
-                            ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                                cur.loc,
-                                format!("visibility '{}' of function '{}' is not compatible with visibility '{}'", cur.visibility, cur.name, func.visibility),
-                                func.loc,
-                                String::from("location of base function")
-                            ));
-                        }
+                        base_function_compatible(func, cur, &mut diagnostics);
                     }
 
                     override_needed.remove(&signature);
@@ -475,42 +441,23 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                     // not specify override for implementing interfaces. As a compromise, only require override when
                     // not implementing an interface
                     if !ns.contracts[base_contract_no].is_interface() {
-                        ns.diagnostics.push(ast::Diagnostic::error(
-                            cur.loc,
-                            format!("function '{}' should specify 'override'", cur.name),
+                        diagnostics.push(ast::Diagnostic::error(
+                            cur.loc_prototype,
+                            format!("function '{}' should specify 'override'", cur.id),
                         ));
                     }
 
                     let func = &ns.functions[function_no];
 
-                    if !func.is_accessor
-                        && !cur.is_accessor
-                        && !compatible_mutability(&cur.mutability, &func.mutability)
-                    {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
-                            format!("mutability '{}' of function '{}' is not compatible with mutability '{}'", cur.mutability, cur.name, func.mutability),
-                            func.loc,
-                            String::from("location of base function")
-                        ));
-                    }
-
-                    if !compatible_visibility(&cur.visibility, &func.visibility) {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
-                            format!("visibility '{}' of function '{}' is not compatible with visibility '{}'", cur.visibility, cur.name, func.visibility),
-                            func.loc,
-                            String::from("location of base function")
-                        ));
-                    }
+                    base_function_compatible(func, cur, &mut diagnostics);
 
                     override_needed.remove(&signature);
                 } else {
-                    ns.diagnostics.push(ast::Diagnostic::error(
-                        cur.loc,
+                    diagnostics.push(ast::Diagnostic::error(
+                        cur.loc_prototype,
                         format!(
                             "function '{}' should specify override list 'override({})'",
-                            cur.name, source_override
+                            cur.id, source_override
                         ),
                     ));
                 }
@@ -527,9 +474,9 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                     .collect::<Vec<usize>>();
 
                 if previous_defs.is_empty() && cur.is_override.is_some() {
-                    ns.diagnostics.push(ast::Diagnostic::error(
-                        cur.loc,
-                        format!("'{}' does not override anything", cur.name),
+                    diagnostics.push(ast::Diagnostic::error(
+                        cur.loc_prototype,
+                        format!("'{}' does not override anything", cur.id),
                     ));
                     continue;
                 }
@@ -544,29 +491,26 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                     continue;
                 }
 
-                for prev in previous_defs.into_iter() {
+                for prev in previous_defs {
                     let func_prev = &ns.functions[prev];
 
                     if Some(base_contract_no) == func_prev.contract_no {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
-                            format!(
-                                "function '{}' overrides function in same contract",
-                                cur.name
-                            ),
-                            func_prev.loc,
-                            format!("previous definition of '{}'", func_prev.name),
+                        diagnostics.push(ast::Diagnostic::error_with_note(
+                            cur.loc_prototype,
+                            format!("function '{}' overrides function in same contract", cur.id),
+                            func_prev.loc_prototype,
+                            format!("previous definition of '{}'", func_prev.id),
                         ));
 
                         continue;
                     }
 
                     if func_prev.ty != cur.ty {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
-                            format!("{} '{}' overrides {}", cur.ty, cur.name, func_prev.ty,),
-                            func_prev.loc,
-                            format!("previous definition of '{}'", func_prev.name),
+                        diagnostics.push(ast::Diagnostic::error_with_note(
+                            cur.loc_prototype,
+                            format!("{} '{}' overrides {}", cur.ty, cur.id, func_prev.ty,),
+                            func_prev.loc_prototype,
+                            format!("previous definition of '{}'", func_prev.id),
                         ));
 
                         continue;
@@ -578,14 +522,14 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                         .zip(cur.params.iter())
                         .any(|(a, b)| a.ty != b.ty)
                     {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
+                        diagnostics.push(ast::Diagnostic::error_with_note(
+                            cur.loc_prototype,
                             format!(
                                 "{} '{}' overrides {} with different argument types",
-                                cur.ty, cur.name, func_prev.ty,
+                                cur.ty, cur.id, func_prev.ty,
                             ),
-                            func_prev.loc,
-                            format!("previous definition of '{}'", func_prev.name),
+                            func_prev.loc_prototype,
+                            format!("previous definition of '{}'", func_prev.id),
                         ));
 
                         continue;
@@ -597,67 +541,48 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
                         .zip(cur.returns.iter())
                         .any(|(a, b)| a.ty != b.ty)
                     {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
+                        diagnostics.push(ast::Diagnostic::error_with_note(
+                            cur.loc_prototype,
                             format!(
                                 "{} '{}' overrides {} with different return types",
-                                cur.ty, cur.name, func_prev.ty,
+                                cur.ty, cur.id, func_prev.ty,
                             ),
-                            func_prev.loc,
-                            format!("previous definition of '{}'", func_prev.name),
+                            func_prev.loc_prototype,
+                            format!("previous definition of '{}'", func_prev.id),
                         ));
 
                         continue;
                     }
 
-                    if !func_prev.is_accessor
-                        && !cur.is_accessor
-                        && !compatible_mutability(&cur.mutability, &func_prev.mutability)
-                    {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
-                            format!("mutability '{}' of function '{}' is not compatible with mutability '{}'", cur.mutability, cur.name, func_prev.mutability),
-                            func_prev.loc,
-                            String::from("location of base function")
-                        ));
-                    }
-
-                    if !compatible_visibility(&cur.visibility, &func_prev.visibility) {
-                        ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                            cur.loc,
-                            format!("visibility '{}' of function '{}' is not compatible with visibility '{}'", cur.visibility, cur.name, func_prev.visibility),
-                            func_prev.loc,
-                            String::from("location of base function")
-                        ));
-                    }
+                    base_function_compatible(func_prev, cur, &mut diagnostics);
 
                     // if a function needs an override, it was defined in a contract, not outside
                     let prev_contract_no = func_prev.contract_no.unwrap();
 
                     if let Some((loc, override_list)) = &cur.is_override {
                         if !func_prev.is_virtual {
-                            ns.diagnostics.push(ast::Diagnostic::error_with_note(
-                                cur.loc,
+                            diagnostics.push(ast::Diagnostic::error_with_note(
+                                cur.loc_prototype,
                                 format!(
                                     "function '{}' overrides function which is not virtual",
-                                    cur.name
+                                    cur.id
                                 ),
-                                func_prev.loc,
-                                format!("previous definition of function '{}'", func_prev.name),
+                                func_prev.loc_prototype,
+                                format!("previous definition of function '{}'", func_prev.id),
                             ));
 
                             continue;
                         }
 
                         if !override_list.is_empty() && !override_list.contains(&prev_contract_no) {
-                            ns.diagnostics.push(ast::Diagnostic::error_with_note(
+                            diagnostics.push(ast::Diagnostic::error_with_note(
                                 *loc,
                                 format!(
                                     "function '{}' override list does not contain '{}'",
-                                    cur.name, ns.contracts[prev_contract_no].name
+                                    cur.id, ns.contracts[prev_contract_no].id
                                 ),
-                                func_prev.loc,
-                                format!("previous definition of function '{}'", func_prev.name),
+                                func_prev.loc_prototype,
+                                format!("previous definition of function '{}'", func_prev.id),
                             ));
                             continue;
                         }
@@ -678,7 +603,9 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
             if cur.is_override.is_some() || cur.is_virtual {
                 ns.contracts[contract_no]
                     .virtual_functions
-                    .insert(signature, function_no);
+                    .entry(signature)
+                    .or_default()
+                    .push(function_no); // there is always at least 1 element in the vector
             }
 
             ns.contracts[contract_no]
@@ -700,24 +627,24 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
             let loc = ns.contracts[contract_no].loc;
             match func.ty {
                 pt::FunctionTy::Fallback | pt::FunctionTy::Receive => {
-                    ns.diagnostics.push(ast::Diagnostic::error_with_note(
+                    diagnostics.push(ast::Diagnostic::error_with_note(
                         loc,
                         format!(
-                            "contract '{}' missing override for '{}' function",
-                            ns.contracts[contract_no].name, func.ty
+                            "contract '{}' missing override for {} function",
+                            ns.contracts[contract_no].id, func.ty
                         ),
-                        func.loc,
-                        format!("declaration of '{}' function", func.ty),
+                        func.loc_prototype,
+                        format!("declaration of {} function", func.ty),
                     ));
                 }
-                _ => ns.diagnostics.push(ast::Diagnostic::error_with_note(
+                _ => diagnostics.push(ast::Diagnostic::error_with_note(
                     loc,
                     format!(
                         "contract '{}' missing override for function '{}'",
-                        ns.contracts[contract_no].name, func.name
+                        ns.contracts[contract_no].id, func.id
                     ),
-                    func.loc,
-                    format!("declaration of function '{}'", func.name),
+                    func.loc_prototype,
+                    format!("declaration of function '{}'", func.id),
                 )),
             }
 
@@ -729,23 +656,285 @@ fn check_inheritance(contract_no: usize, ns: &mut ast::Namespace) {
             .skip(1)
             .map(|(_, function_no)| {
                 let func = &ns.functions[*function_no];
-
                 ast::Note {
-                    loc: func.loc,
-                    message: format!("previous definition of function '{}'", func.name),
+                    loc: func.loc_prototype,
+                    message: format!("previous definition of function '{}'", func.id),
                 }
             })
             .collect();
 
-        ns.diagnostics.push(ast::Diagnostic::error_with_notes(
-            func.loc,
-            format!(
-                "function '{}' with this signature already defined",
-                func.name
-            ),
+        diagnostics.push(ast::Diagnostic::error_with_notes(
+            func.loc_prototype,
+            format!("function '{}' with this signature already defined", func.id),
             notes,
         ));
     }
+
+    ns.diagnostics.extend(diagnostics);
+}
+
+/// Given a contract number, check for function names conflicting with any mangled name.
+/// Only applies to public functions.
+///
+/// Note: In sema we do not care about the function name too much.
+/// The mangled name is consumed later by the ABI generation.
+fn check_mangled_function_names(contract_no: usize, ns: &mut ast::Namespace) {
+    let public_functions: Vec<usize> = ns.contracts[contract_no]
+        .all_functions
+        .keys()
+        .copied()
+        .filter(|f| ns.functions[*f].is_public())
+        .filter(|f| {
+            matches!(
+                ns.functions[*f].ty,
+                pt::FunctionTy::Function | pt::FunctionTy::Constructor
+            )
+        })
+        .collect();
+
+    for f in &public_functions {
+        if let Some(offender) = public_functions
+            .iter()
+            .find(|other| ns.functions[*f].mangled_name == ns.functions[**other].id.name)
+        {
+            let f = &ns.functions[*f];
+            let message = format!(
+                "mangling the symbol of overloaded function '{}' with signature '{}' results in a new symbol '{}' but this symbol already exists",
+                &f.id, &f.signature, f.mangled_name
+            );
+            ns.diagnostics.push(ast::Diagnostic::error_with_note(
+                f.loc_prototype,
+                message,
+                ns.functions[*offender].loc_prototype,
+                "this function declaration conflicts with mangled name".into(),
+            ))
+        }
+    }
+}
+
+/// A contract on the contracts pallet requires at least one public message
+fn polkadot_requires_public_functions(contract_no: usize, ns: &mut ast::Namespace) {
+    let contract = &mut ns.contracts[contract_no];
+
+    if ns.target.is_polkadot()
+        && !ns.diagnostics.any_errors()
+        && contract.is_concrete()
+        && !contract.all_functions.keys().any(|func_no| {
+            let func = &ns.functions[*func_no];
+
+            match func.ty {
+                pt::FunctionTy::Function => func.is_public(),
+                pt::FunctionTy::Fallback | pt::FunctionTy::Receive => true,
+                _ => false,
+            }
+        })
+    {
+        let message = format!("contracts without public storage or functions are not allowed on Polkadot. Consider declaring this contract abstract: 'abstract contract {}'", contract.id);
+        contract.instantiable = false;
+
+        ns.diagnostics
+            .push(ast::Diagnostic::error(contract.loc, message));
+    }
+}
+
+/// Constructors and functions are no different pallet contracts.
+/// This function checks that all constructors and function names are unique.
+/// Overloading (mangled function or constructor names) is taken into account.
+fn unique_constructor_names(contract_no: usize, ns: &mut ast::Namespace) {
+    if ns.diagnostics.any_errors() {
+        return;
+    }
+
+    let mut functions = HashMap::new();
+    for f in &ns.contracts[contract_no].functions {
+        let func = &ns.functions[*f];
+        if !func.is_public() {
+            continue;
+        }
+
+        if let Some(offender) = functions.insert(&func.mangled_name, *f) {
+            ns.diagnostics.push(ast::Diagnostic::error_with_note(
+                func.loc_prototype,
+                format!("Non unique function or constructor name '{}'", &func.id),
+                ns.functions[offender].loc_prototype,
+                format!("previous declaration of '{}'", &ns.functions[offender].id),
+            ))
+        }
+    }
+}
+
+/// Generate diagnostics if function attributes are not compatible with base function
+fn base_function_compatible(
+    base: &ast::Function,
+    func: &ast::Function,
+    diagnostics: &mut Diagnostics,
+) {
+    if !base.is_accessor
+        && !func.is_accessor
+        && !compatible_mutability(&func.mutability, &base.mutability)
+    {
+        diagnostics.push(ast::Diagnostic::error_with_note(
+            func.loc_prototype,
+            format!(
+                "mutability '{}' of function '{}' is not compatible with mutability '{}'",
+                func.mutability, func.id, base.mutability
+            ),
+            base.loc_prototype,
+            String::from("location of base function"),
+        ));
+    }
+
+    if !compatible_visibility(&func.visibility, &base.visibility) {
+        diagnostics.push(ast::Diagnostic::error_with_note(
+            func.loc_prototype,
+            format!(
+                "visibility '{}' of function '{}' is not compatible with visibility '{}'",
+                func.visibility, func.id, base.visibility
+            ),
+            base.loc_prototype,
+            String::from("location of base function"),
+        ));
+    }
+
+    match (&func.selector, &base.selector) {
+        (cur, func) if cur == func => (),
+        (Some(cur_selector), Some(func_selector)) => {
+            diagnostics.push(ast::Diagnostic::error_with_note(
+                cur_selector.0,
+                format!(
+                    "selector of function '{}' different from base selector",
+                    func.id,
+                ),
+                func_selector.0,
+                String::from("location of base function"),
+            ));
+        }
+        (None, Some(func_selector)) => {
+            diagnostics.push(ast::Diagnostic::error_with_note(
+                func.loc_prototype,
+                format!(
+                    "selector of function '{}' must match base selector",
+                    func.id,
+                ),
+                func_selector.0,
+                String::from("location of base function"),
+            ));
+        }
+        (Some(cur_selector), None) => {
+            diagnostics.push(ast::Diagnostic::error_with_note(
+                cur_selector.0,
+                format!(
+                    "base function needs same selector as selector of function '{}'",
+                    func.id,
+                ),
+                base.loc_prototype,
+                String::from("location of base function"),
+            ));
+        }
+        // rust compile wants this, already handled in first arm
+        (None, None) => (),
+    }
+
+    let mut no_correspondence: Vec<(pt::Loc, &String)> = Vec::new();
+    let mut incorrect_flag: IndexSet<(pt::Loc, pt::Loc, &String)> = IndexSet::new();
+    let func_accounts = &*func.solana_accounts.borrow();
+    let base_accounts = &*base.solana_accounts.borrow();
+    let mut correct_ordering = true;
+
+    let (correct, func_acc_locations) = check_override_accounts_compatible(
+        base_accounts,
+        func_accounts,
+        &mut no_correspondence,
+        &mut incorrect_flag,
+        false,
+    );
+    correct_ordering &= correct;
+
+    let (correct, base_acc_locations) = check_override_accounts_compatible(
+        func_accounts,
+        base_accounts,
+        &mut no_correspondence,
+        &mut incorrect_flag,
+        true,
+    );
+    correct_ordering &= correct;
+
+    if !no_correspondence.is_empty() {
+        let notes = no_correspondence
+            .iter()
+            .map(|(loc, account_name)| Note {
+                loc: *loc,
+                message: format!("corresponding account '{account_name}' is missing"),
+            })
+            .collect::<Vec<Note>>();
+
+        diagnostics.push(Diagnostic::error_with_notes(
+            func.loc_prototype,
+            "functions must have the same declared accounts for correct overriding".to_string(),
+            notes,
+        ));
+    }
+
+    if !incorrect_flag.is_empty() {
+        for (loc_1, loc_2, account_name) in &incorrect_flag {
+            diagnostics.push(Diagnostic::error_with_note(
+                *loc_1,
+                format!(
+                    "account '{account_name}' must be declared with the same annotation for overriding"
+                ),
+                *loc_2,
+                "location of other declaration".to_string(),
+            ));
+        }
+    }
+
+    if !correct_ordering {
+        diagnostics.push(Diagnostic::error_with_note(
+            func_acc_locations.unwrap(),
+            "accounts must be declared in the same order for overriding".to_string(),
+            base_acc_locations.unwrap(),
+            "location of base function accounts".to_string(),
+        ));
+    }
+}
+
+/// Checks if the accounts from the virtual function and the overriding one are compatible.
+/// Returns true if the accounts have been declared in the same order in both functions and
+/// the location of all the account declarations.
+fn check_override_accounts_compatible<'a>(
+    func_accounts: &'a IndexMap<String, SolanaAccount>,
+    other_accounts: &'a IndexMap<String, SolanaAccount>,
+    no_correspondence: &mut Vec<(pt::Loc, &'a String)>,
+    incorrect_flag: &mut IndexSet<(pt::Loc, pt::Loc, &'a String)>,
+    reverse: bool,
+) -> (bool, Option<pt::Loc>) {
+    let mut correct_order = true;
+    let mut locations = if let Some((_, acc)) = other_accounts.get_index(0) {
+        Some(acc.loc)
+    } else {
+        None
+    };
+
+    for (account_no, (account_name, account_flags)) in other_accounts.iter().enumerate() {
+        locations.as_mut().unwrap().union(&account_flags.loc);
+        if let Some((other_no, _, other_account)) = func_accounts.get_full(account_name) {
+            if other_account.is_signer != account_flags.is_signer
+                || other_account.is_writer != account_flags.is_writer
+            {
+                if reverse {
+                    incorrect_flag.insert((other_account.loc, account_flags.loc, account_name));
+                } else {
+                    incorrect_flag.insert((account_flags.loc, other_account.loc, account_name));
+                }
+            } else if account_no != other_no {
+                correct_order = false;
+            }
+        } else {
+            no_correspondence.push((account_flags.loc, account_name));
+        }
+    }
+
+    (correct_order, locations)
 }
 
 /// Function body which should be resolved.
@@ -754,6 +943,7 @@ struct DelayedResolveFunction<'a> {
     function_no: usize,
     contract_no: usize,
     function: &'a pt::FunctionDefinition,
+    annotations: Vec<&'a pt::Annotation>,
 }
 
 #[derive(Default)]
@@ -768,58 +958,47 @@ struct ResolveLater<'a> {
 /// Resolve functions declarations, constructor declarations, and contract variables
 /// This returns a list of function bodies to resolve
 fn resolve_declarations<'a>(
-    def: &'a pt::ContractDefinition,
-    comments: &[pt::Comment],
+    def: &'a ContractDefinition,
     file_no: usize,
-    contract_no: usize,
     ns: &mut ast::Namespace,
     delayed: &mut ResolveLater<'a>,
 ) {
     ns.diagnostics.push(ast::Diagnostic::debug(
         def.loc,
-        format!("found {} '{}'", def.ty, def.name.name),
+        format!("found {} '{}'", def.ty, def.name.unwrap().name),
     ));
 
     let mut function_no_bodies = Vec::new();
 
     // resolve state variables. We may need a constant to resolve the array
     // dimension of a function argument.
-    delayed.initializers.extend(variables::contract_variables(
-        def,
-        comments,
-        file_no,
-        contract_no,
-        ns,
-    ));
+    delayed
+        .initializers
+        .extend(variables::contract_variables(def, file_no, ns));
 
     // resolve function signatures
-    let mut doc_comment_start = def.loc.start();
-
     for part in &def.parts {
-        if let pt::ContractPart::FunctionDefinition(ref f) = part {
-            let tags = parse_doccomments(comments, doc_comment_start, f.loc.start());
-
-            if let Some(function_no) =
-                functions::contract_function(def, f, &tags, file_no, contract_no, ns)
-            {
+        if let pt::ContractPart::FunctionDefinition(ref f) = &part.part {
+            if let Some(function_no) = functions::contract_function(
+                def,
+                f,
+                &part.doccomments,
+                &part.annotations,
+                file_no,
+                ns,
+            ) {
                 if f.body.is_some() {
                     delayed.function_bodies.push(DelayedResolveFunction {
-                        contract_no,
+                        contract_no: def.contract_no,
                         function_no,
                         function: f.as_ref(),
+                        annotations: part.annotations.clone(),
                     });
                 } else {
                     function_no_bodies.push(function_no);
                 }
             }
-
-            if let Some(Statement::Block { loc, .. }) = &f.body {
-                doc_comment_start = loc.end();
-                continue;
-            }
         }
-
-        doc_comment_start = part.loc().end();
     }
 
     if let pt::ContractTy::Contract(loc) = &def.ty {
@@ -827,10 +1006,10 @@ fn resolve_declarations<'a>(
             let notes = function_no_bodies
                 .into_iter()
                 .map(|function_no| ast::Note {
-                    loc: ns.functions[function_no].loc,
+                    loc: ns.functions[function_no].loc_prototype,
                     message: format!(
                         "location of function '{}' with no body",
-                        ns.functions[function_no].name
+                        ns.functions[function_no].id
                     ),
                 })
                 .collect::<Vec<ast::Note>>();
@@ -848,16 +1027,15 @@ fn resolve_declarations<'a>(
 }
 
 /// Resolve the using declarations in a contract
-fn resolve_using(
-    contracts: &[(usize, &pt::ContractDefinition)],
-    file_no: usize,
-    ns: &mut ast::Namespace,
-) {
-    for (contract_no, def) in contracts {
-        for part in &def.parts {
-            if let pt::ContractPart::Using(using) = part {
-                if let Ok(using) = using::using_decl(using, file_no, Some(*contract_no), ns) {
-                    ns.contracts[*contract_no].using.push(using);
+fn resolve_using(contracts: &[ContractDefinition], file_no: usize, ns: &mut ast::Namespace) {
+    for contract in contracts {
+        for part in &contract.parts {
+            if let pt::ContractPart::Using(using) = &part.part {
+                annotions_not_allowed(&part.annotations, "using", ns);
+
+                if let Ok(using) = using::using_decl(using, file_no, Some(contract.contract_no), ns)
+                {
+                    ns.contracts[contract.contract_no].using.push(using);
                 }
             }
         }
@@ -876,15 +1054,23 @@ fn resolve_bodies(
         contract_no,
         function_no,
         function,
+        annotations,
     } in bodies
     {
-        if statements::resolve_function_body(function, file_no, Some(contract_no), function_no, ns)
-            .is_err()
+        if statements::resolve_function_body(
+            function,
+            &annotations,
+            file_no,
+            Some(contract_no),
+            function_no,
+            ns,
+        )
+        .is_err()
         {
             broken = true;
         } else if !ns.diagnostics.any_errors() {
             for variable in ns.functions[function_no].symtable.vars.values() {
-                if let Some(warning) = emit_warning_local_variable(variable) {
+                if let Some(warning) = emit_warning_local_variable(variable, ns) {
                     ns.diagnostics.push(warning);
                 }
             }
@@ -921,12 +1107,12 @@ pub fn collect_base_args<'a>(
                     *loc,
                     format!(
                         "duplicate argument for base contract '{}'",
-                        ns.contracts[*base_no].name
+                        ns.contracts[*base_no].id
                     ),
                     *prev_args.loc,
                     format!(
                         "previous argument for base contract '{}'",
-                        ns.contracts[*base_no].name
+                        ns.contracts[*base_no].id
                     ),
                 ));
             } else {
@@ -952,12 +1138,12 @@ pub fn collect_base_args<'a>(
                     base.loc,
                     format!(
                         "duplicate argument for base contract '{}'",
-                        ns.contracts[base.contract_no].name
+                        ns.contracts[base.contract_no].id
                     ),
                     *prev_args.loc,
                     format!(
                         "previous argument for base contract '{}'",
-                        ns.contracts[base.contract_no].name
+                        ns.contracts[base.contract_no].id
                     ),
                 ));
             } else {
@@ -1009,7 +1195,7 @@ fn check_base_args(contract_no: usize, ns: &mut ast::Namespace) {
         })
         .collect::<Vec<usize>>();
 
-    if contract.have_constructor(ns) {
+    if !contract.constructors(ns).is_empty() {
         for constructor_no in contract
             .functions
             .iter()
@@ -1031,7 +1217,7 @@ fn check_base_args(contract_no: usize, ns: &mut ast::Namespace) {
                         contract.loc,
                         format!(
                             "missing arguments to base contract '{}' constructor",
-                            ns.contracts[*base_no].name
+                            ns.contracts[*base_no].id
                         ),
                     ));
                 }
@@ -1048,7 +1234,7 @@ fn check_base_args(contract_no: usize, ns: &mut ast::Namespace) {
                     contract.loc,
                     format!(
                         "missing arguments to base contract '{}' constructor",
-                        ns.contracts[*base_no].name
+                        ns.contracts[*base_no].id
                     ),
                 ));
             }
@@ -1069,4 +1255,86 @@ fn compatible_visibility(left: &pt::Visibility, right: &pt::Visibility) -> bool 
         ) | (pt::Visibility::Internal(_), pt::Visibility::Internal(_))
             | (pt::Visibility::Private(_), pt::Visibility::Private(_))
     )
+}
+
+/// This function checks which function names must be mangled given a contract.
+/// Mangling happens when there is more than one function with the same name in the given `contract_no`.
+fn mangle_function_names(contract_no: usize, ns: &mut Namespace) {
+    let mut repeated_names: HashMap<String, usize> = HashMap::new();
+
+    for func_no in ns.contracts[contract_no].all_functions.keys() {
+        let function = &ns.functions[*func_no];
+
+        let not_callable = !function.is_public()
+            && (function.ty != pt::FunctionTy::Function
+                || function.ty != pt::FunctionTy::Constructor);
+
+        if function.is_override.is_some() || not_callable {
+            continue;
+        }
+
+        if let Some(old_no) = repeated_names.insert(function.id.name.clone(), *func_no) {
+            ns.functions[old_no]
+                .mangled_name_contracts
+                .insert(contract_no);
+            ns.functions[*func_no]
+                .mangled_name_contracts
+                .insert(contract_no);
+        }
+    }
+}
+
+/// This check guarantees that each public Solidity function has a unique selector.
+fn verify_unique_selector(contract_no: usize, ns: &mut Namespace) {
+    let mut selectors: HashMap<Vec<u8>, usize> = HashMap::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    for func_no in ns.contracts[contract_no].all_functions.keys() {
+        let func = &ns.functions[*func_no];
+
+        let selector = func.selector(ns, &contract_no);
+        let selector_len = ns.target.selector_length();
+
+        // On Solana, concrete contracts have selectors of 8 bytes
+        if ns.contracts[contract_no].is_concrete() && selector.len() != selector_len as usize {
+            let loc = if let Some((loc, _)) = &func.selector {
+                loc
+            } else {
+                &func.loc_prototype
+            };
+
+            diagnostics.push(ast::Diagnostic::error(
+                *loc,
+                format!(
+                    "function '{}' selector must be {} bytes rather than {} bytes",
+                    func.id,
+                    selector_len,
+                    selector.len()
+                ),
+            ));
+        }
+
+        if let Some(other_func_no) = selectors.get(&selector) {
+            let other = &ns.functions[*other_func_no];
+
+            if other.signature != func.signature
+                && func.ty != FunctionTy::Constructor
+                && func.is_public()
+                && other.is_public()
+            {
+                diagnostics.push(ast::Diagnostic::error_with_note(
+                    func.loc_prototype,
+                    format!(
+                        "{} '{}' selector is the same as {} '{}'",
+                        func.ty, func.id, other.ty, other.id
+                    ),
+                    other.loc_prototype,
+                    format!("definition of {} '{}'", other.ty, other.id),
+                ));
+            }
+        } else {
+            selectors.insert(selector, *func_no);
+        }
+    }
+
+    ns.diagnostics.append(&mut diagnostics);
 }

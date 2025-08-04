@@ -2,7 +2,7 @@
 
 use crate::sema::ast::{ArrayLength, Namespace, Parameter, Symbol, Type};
 use crate::sema::diagnostics::Diagnostics;
-use crate::sema::expression::{unescape, ExprContext};
+use crate::sema::expression::{strings::unescape, ExprContext};
 use crate::sema::symtable::{Symtable, VariableUsage};
 use crate::sema::yul::ast::{YulExpression, YulSuffix};
 use crate::sema::yul::builtin::{parse_builtin_keyword, yul_unsupported_builtin};
@@ -34,13 +34,13 @@ fn get_suffix_from_string(suffix_name: &str) -> Option<YulSuffix> {
 /// Resolve an yul expression.
 pub(crate) fn resolve_yul_expression(
     expr: &pt::YulExpression,
-    context: &ExprContext,
+    context: &mut ExprContext,
     symtable: &mut Symtable,
     function_table: &mut FunctionsTable,
     ns: &mut Namespace,
 ) -> Result<YulExpression, ()> {
     match expr {
-        pt::YulExpression::BoolLiteral(loc, value, ty) => resolve_bool_literal(loc, value, ty, ns),
+        pt::YulExpression::BoolLiteral(loc, value, ty) => resolve_bool_literal(loc, *value, ty, ns),
 
         pt::YulExpression::NumberLiteral(loc, base, exp, ty) => {
             resolve_number_literal(loc, base, exp, ty, ns)
@@ -69,7 +69,7 @@ pub(crate) fn resolve_yul_expression(
 
         pt::YulExpression::StringLiteral(value, ty) => {
             let mut diagnostics = Diagnostics::default();
-            let unescaped_string =
+            let (_, unescaped_string) =
                 unescape(&value.string[..], 0, value.loc.file_no(), &mut diagnostics);
             ns.diagnostics.extend(diagnostics);
             resolve_string_literal(&value.loc, unescaped_string, ty, ns)
@@ -97,7 +97,7 @@ fn get_type_from_big_int(big_int: &BigInt) -> Type {
 
 fn resolve_bool_literal(
     loc: &pt::Loc,
-    value: &bool,
+    value: bool,
     ty: &Option<pt::Identifier>,
     ns: &mut Namespace,
 ) -> Result<YulExpression, ()> {
@@ -115,7 +115,7 @@ fn resolve_bool_literal(
         Type::Bool
     };
 
-    Ok(YulExpression::BoolLiteral(*loc, *value, new_type))
+    Ok(YulExpression::BoolLiteral(*loc, value, new_type))
 }
 
 fn resolve_number_literal(
@@ -148,7 +148,7 @@ fn resolve_number_literal(
             } else {
                 ns.diagnostics.push(Diagnostic::error(
                     *loc,
-                    format!("exponent '{}' too large", exp),
+                    format!("exponent '{exp}' too large"),
                 ));
                 return Err(());
             }
@@ -157,7 +157,7 @@ fn resolve_number_literal(
         } else {
             ns.diagnostics.push(Diagnostic::error(
                 *loc,
-                format!("exponent '{}' too large", exp),
+                format!("exponent '{exp}' too large"),
             ));
             return Err(());
         }
@@ -200,8 +200,7 @@ fn resolve_number_literal(
             ty: ErrorType::TypeError,
             loc: *loc,
             message: format!(
-                "the provided literal requires {} bits, but the type only supports {}",
-                bits_needed, type_size
+                "the provided literal requires {bits_needed} bits, but the type only supports {type_size}"
             ),
             notes: vec![],
         });
@@ -268,9 +267,9 @@ fn resolve_variable_reference(
     id: &pt::Identifier,
     ns: &mut Namespace,
     symtable: &Symtable,
-    context: &ExprContext,
+    context: &mut ExprContext,
 ) -> Result<YulExpression, ()> {
-    if let Some(v) = symtable.find(&id.name) {
+    if let Some(v) = symtable.find(context, &id.name) {
         match &v.usage_type {
             VariableUsage::YulLocalVariable => {
                 return Ok(YulExpression::YulLocalVariable(id.loc, v.ty.clone(), v.pos))
@@ -355,7 +354,7 @@ fn resolve_variable_reference(
 pub(crate) fn resolve_function_call(
     function_table: &mut FunctionsTable,
     func_call: &YulFunctionCall,
-    context: &ExprContext,
+    context: &mut ExprContext,
     symtable: &mut Symtable,
     ns: &mut Namespace,
 ) -> Result<YulExpression, ()> {
@@ -394,7 +393,7 @@ pub(crate) fn resolve_function_call(
                 func_call.loc,
                 format!(
                     "builtin '{}' is not available for target {}. Please, open a GitHub issue \
-                at https://github.com/hyperledger-labs/solang/issues \
+                at https://github.com/hyperledger-solang/solang/issues \
                 if there is need to support this function",
                     prototype.name, ns.target
                 ),
@@ -424,7 +423,9 @@ pub(crate) fn resolve_function_call(
             ty_loc: None,
             indexed: false,
             readonly: false,
+            infinite_size: false,
             recursive: false,
+            annotation: None,
         };
 
         for item in &resolved_arguments {
@@ -477,7 +478,7 @@ pub(crate) fn resolve_function_call(
 
 /// Check if the provided argument is compatible with the declared parameters of a function.
 fn check_function_argument(
-    parameter: &Parameter,
+    parameter: &Parameter<Type>,
     argument: &YulExpression,
     function_table: &FunctionsTable,
     ns: &mut Namespace,
@@ -503,7 +504,7 @@ fn check_function_argument(
         if n1 < n2 {
             ns.diagnostics.push(Diagnostic::warning(
                 argument.loc(),
-                format!("{} bit type may not fit into {} bit type", n2, n1),
+                format!("{n2} bit type may not fit into {n1} bit type"),
             ));
         }
     } else if matches!(parameter.ty, Type::Uint(_)) && matches!(arg_type, Type::Int(_)) {
@@ -517,10 +518,7 @@ fn check_function_argument(
         if n1 == n2 {
             ns.diagnostics.push(Diagnostic::warning(
                 argument.loc(),
-                format!(
-                    "{} bit unsigned integer may not fit into {} bit signed integer",
-                    n1, n2
-                ),
+                format!("{n1} bit unsigned integer may not fit into {n2} bit signed integer"),
             ));
         }
     }
@@ -531,7 +529,7 @@ fn resolve_suffix_access(
     loc: &pt::Loc,
     expr: &pt::YulExpression,
     id: &Identifier,
-    context: &ExprContext,
+    context: &mut ExprContext,
     symtable: &mut Symtable,
     function_table: &mut FunctionsTable,
     ns: &mut Namespace,
@@ -576,10 +574,7 @@ fn resolve_suffix_access(
             } else if matches!(dims.last(), Some(ArrayLength::Fixed(_))) {
                 ns.diagnostics.push(Diagnostic::error(
                     resolved_expr.loc(),
-                    format!(
-                        "the given expression does not support '.{}' suffixes",
-                        suffix_type.to_string()
-                    ),
+                    format!("the given expression does not support '.{suffix_type}' suffixes"),
                 ));
             }
         }
@@ -623,7 +618,7 @@ fn resolve_suffix_access(
             return Err(());
         }
 
-        YulExpression::BoolLiteral(..)
+        YulExpression::BoolLiteral { .. }
         | YulExpression::NumberLiteral(..)
         | YulExpression::StringLiteral(..)
         | YulExpression::YulLocalVariable(..)
@@ -635,10 +630,7 @@ fn resolve_suffix_access(
         | YulExpression::ConstantVariable(_, _, None, _) => {
             ns.diagnostics.push(Diagnostic::error(
                 resolved_expr.loc(),
-                format!(
-                    "the given expression does not support '.{}' suffixes",
-                    suffix_type.to_string()
-                ),
+                format!("the given expression does not support '.{suffix_type}' suffixes"),
             ));
             return Err(());
         }
@@ -655,7 +647,7 @@ fn resolve_suffix_access(
 /// has a valid expression given the context.
 pub(crate) fn check_type(
     expr: &YulExpression,
-    context: &ExprContext,
+    context: &mut ExprContext,
     ns: &mut Namespace,
     symtable: &mut Symtable,
 ) -> Option<Diagnostic> {
@@ -671,7 +663,7 @@ pub(crate) fn check_type(
 
             YulExpression::StringLiteral(..)
             | YulExpression::NumberLiteral(..)
-            | YulExpression::BoolLiteral(..)
+            | YulExpression::BoolLiteral { .. }
             | YulExpression::ConstantVariable(..) => {
                 return Some(Diagnostic::error(
                     expr.loc(),
@@ -699,7 +691,7 @@ pub(crate) fn check_type(
                     Some(Diagnostic::error(
                         expr.loc(),
                         "assignment to length is not implemented. If there is need for this feature, please file a Github issue \
-                        at https://github.com/hyperledger-labs/solang/issues\
+                        at https://github.com/hyperledger-solang/solang/issues\
                         ".to_string(),
                     ))
                 } else {

@@ -7,21 +7,24 @@ use crate::sema::yul::ast::{YulBlock, YulStatement};
 use crate::sema::yul::block::{process_statements, resolve_yul_block};
 use crate::sema::yul::functions::FunctionsTable;
 use crate::sema::yul::switch::resolve_condition;
-use solang_parser::{diagnostics::Diagnostic, pt};
+use solang_parser::{
+    diagnostics::Diagnostic,
+    pt::{self, CodeLocation},
+};
 
 /// Resolve a for-loop statement
 /// Returns the resolved block and a bool to indicate if the next statement is reachable.
 pub(crate) fn resolve_for_loop(
     yul_for: &pt::YulFor,
-    context: &ExprContext,
+    context: &mut ExprContext,
     reachable: bool,
     loop_scope: &mut LoopScopes,
     symtable: &mut Symtable,
     function_table: &mut FunctionsTable,
     ns: &mut Namespace,
 ) -> Result<(YulStatement, bool), ()> {
-    symtable.new_scope();
-    function_table.new_scope();
+    context.enter_scope();
+    function_table.enter_scope();
     let mut next_reachable = reachable;
     let resolved_init_block = resolve_for_init_block(
         &yul_for.init_block,
@@ -37,7 +40,7 @@ pub(crate) fn resolve_for_loop(
     let resolved_cond =
         resolve_condition(&yul_for.condition, context, symtable, function_table, ns)?;
 
-    loop_scope.new_scope();
+    loop_scope.enter_scope();
 
     let resolved_exec_block = resolve_yul_block(
         &yul_for.execution_block.loc,
@@ -64,7 +67,7 @@ pub(crate) fn resolve_for_loop(
         ns,
     );
 
-    symtable.leave_scope();
+    context.leave_scope(symtable, yul_for.loc);
     function_table.leave_scope(ns);
 
     Ok((
@@ -84,7 +87,7 @@ pub(crate) fn resolve_for_loop(
 /// Returns the resolved block and a bool to indicate if the next statement is reachable.
 fn resolve_for_init_block(
     init_block: &pt::YulBlock,
-    context: &ExprContext,
+    context: &mut ExprContext,
     reachable: bool,
     loop_scope: &mut LoopScopes,
     symtable: &mut Symtable,
@@ -116,7 +119,7 @@ fn resolve_for_init_block(
             loc: init_block.loc,
             reachable,
             next_reachable,
-            body,
+            statements: body,
         },
         next_reachable,
     ))

@@ -1,6 +1,6 @@
-// Test case for https://github.com/hyperledger-labs/solang/issues/732
+// Test case for https://github.com/hyperledger-solang/solang/issues/732
 library FixedPoint {
-   
+
     struct uq144x112 {
         uint _x;
     }
@@ -19,3 +19,5 @@ library FixedPoint {
         return uint144(self._x >> 112);
     }
 }
+
+// ---- Expect: diagnostics ----

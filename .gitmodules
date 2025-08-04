@@ -1,3 +1,6 @@
-[submodule "solang-parser/testdata/solidity"]
-	path = solang-parser/testdata/solidity
+[submodule "testdata/solidity"]
+	path = testdata/solidity
 	url = https://github.com/ethereum/solidity
+[submodule "integration/polkadot/tornado/tornado-cli"]
+	path = integration/polkadot/tornado/tornado-cli
+	url = https://github.com/tornadocash/tornado-cli.git

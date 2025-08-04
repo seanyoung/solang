@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import * as vscode from 'vscode';
 
 export default async function downloadWithRetryDialog<T>(downloadFunc: () => Promise<T>): Promise<T> {
@@ -5,7 +7,7 @@ export default async function downloadWithRetryDialog<T>(downloadFunc: () => Pro
   while (true) {
     try {
       return await downloadFunc();
-    } catch (e) {
+    } catch (e: any) {
       const selected = await vscode.window.showErrorMessage(
         'Failed to download: ' + e.message,
         {},

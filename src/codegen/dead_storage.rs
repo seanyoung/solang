@@ -28,7 +28,7 @@ impl fmt::Display for Definition {
                 instr_no,
                 assignment_no,
             } => {
-                write!(f, "({}, {}, {})", block_no, instr_no, assignment_no)
+                write!(f, "({block_no}, {instr_no}, {assignment_no})")
             }
         }
     }
@@ -58,16 +58,16 @@ impl fmt::Display for Transfer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Transfer::Gen { def, var_no } => {
-                write!(f, "Gen %{} = {}", var_no, def)
+                write!(f, "Gen %{var_no} = {def}")
             }
             Transfer::Copy { var_no, src } => {
-                write!(f, "Copy %{} from %{}", var_no, src)
+                write!(f, "Copy %{var_no} from %{src}")
             }
             Transfer::Kill { var_no } => {
-                write!(f, "Kill %{}", var_no)
+                write!(f, "Kill %{var_no}")
             }
             Transfer::Store { def, expr } => {
-                write!(f, "Storage: {:?} at {}", expr, def)
+                write!(f, "Storage: {expr:?} at {def}")
             }
         }
     }
@@ -140,35 +140,40 @@ fn reaching_definitions(cfg: &mut ControlFlowGraph) -> (Vec<Vec<Vec<Transfer>>>,
             &mut block_vars,
         );
 
-        for edge in block_edges(&cfg.blocks[block_no]) {
-            if !block_vars.contains_key(&edge) {
-                blocks_todo.insert(edge);
-                block_vars.insert(edge, vec![vars.clone()]);
-            } else if block_vars[&edge][0] != vars {
-                blocks_todo.insert(edge);
-                if let Some(block_vars) = block_vars.get_mut(&edge) {
-                    // merge incoming vars
-                    for (var_no, defs) in &vars.vars {
-                        if let Some(entry) = block_vars[0].vars.get_mut(var_no) {
-                            for (incoming_def, storage) in defs {
-                                if !entry.contains_key(incoming_def) {
-                                    entry.insert(*incoming_def, storage.clone());
-                                }
-                            }
-                        } else {
-                            block_vars[0].vars.insert(*var_no, defs.clone());
-                        }
-                    }
+        for edge in cfg.blocks[block_no].successors() {
+            let mut changed = false;
 
-                    // merge storage stores
-                    for store in &vars.stores {
-                        if !block_vars[0].stores.iter().any(|(def, _)| *def == store.0) {
-                            block_vars[0].stores.push(store.clone());
+            if !block_vars.contains_key(&edge) {
+                changed |= block_vars.insert(edge, vec![vars.clone()]).is_none();
+            } else if block_vars[&edge][0] != vars {
+                let block_vars = block_vars
+                    .get_mut(&edge)
+                    .expect("block vars must contain edge");
+                // merge incoming vars
+                for (var_no, defs) in &vars.vars {
+                    if let Some(entry) = block_vars[0].vars.get_mut(var_no) {
+                        for (incoming_def, storage) in defs {
+                            if !entry.contains_key(incoming_def) {
+                                entry.insert(*incoming_def, storage.clone());
+                                changed = true;
+                            }
                         }
+                    } else {
+                        changed |= block_vars[0].vars.insert(*var_no, defs.clone()).is_none();
                     }
-                } else {
-                    unreachable!();
                 }
+
+                // merge storage stores
+                for store in &vars.stores {
+                    if !block_vars[0].stores.iter().any(|(def, _)| *def == store.0) {
+                        block_vars[0].stores.push(store.clone());
+                        changed = true;
+                    }
+                }
+            }
+
+            if changed {
+                blocks_todo.insert(edge);
             }
         }
     }
@@ -208,7 +213,7 @@ fn instr_transfers(block_no: usize, block: &BasicBlock) -> Vec<Vec<Transfer>> {
         transfers.push(match instr {
             Instr::Set {
                 res,
-                expr: Expression::Variable(_, _, src),
+                expr: Expression::Variable { var_no: src, .. },
                 ..
             } => {
                 vec![
@@ -229,7 +234,6 @@ fn instr_transfers(block_no: usize, block: &BasicBlock) -> Vec<Vec<Transfer>> {
 
                 v
             }
-            Instr::AbiDecode { res, .. } => set_var(res),
             Instr::LoadStorage { res, .. } => set_var(&[*res]),
             Instr::PushMemory { array, res, .. } => {
                 let mut v = set_var(&[*res]);
@@ -313,8 +317,8 @@ fn instr_transfers(block_no: usize, block: &BasicBlock) -> Vec<Vec<Transfer>> {
 
 fn array_var(expr: &Expression) -> Option<usize> {
     match expr {
-        Expression::Variable(_, _, var_no) => Some(*var_no),
-        Expression::Subscript(_, _, _, expr, _) | Expression::StructMember(_, _, expr, _) => {
+        Expression::Variable { var_no, .. } => Some(*var_no),
+        Expression::Subscript { expr, .. } | Expression::StructMember { expr, .. } => {
             array_var(expr)
         }
         _ => None,
@@ -332,7 +336,7 @@ fn apply_transfers(
 
     debug_assert_eq!(transfers.len(), cfg.blocks[block_no].instr.len());
 
-    // this is done in two paseses. The first pass just deals with variables.
+    // this is done in two passes. The first pass just deals with variables.
     // The second pass deals with storage stores
 
     // for each instruction
@@ -472,37 +476,6 @@ fn apply_transfers(
     block_vars.insert(block_no, res);
 }
 
-fn block_edges(block: &BasicBlock) -> Vec<usize> {
-    let mut out = Vec::new();
-
-    // out cfg has edge as the last instruction in a block; EXCEPT
-    // Instr::AbiDecode() which has an edge when decoding fails
-    for instr in &block.instr {
-        match instr {
-            Instr::Branch { block } => {
-                out.push(*block);
-            }
-            Instr::BranchCond {
-                true_block,
-                false_block,
-                ..
-            } => {
-                out.push(*true_block);
-                out.push(*false_block);
-            }
-            Instr::AbiDecode {
-                exception_block: Some(block),
-                ..
-            } => {
-                out.push(*block);
-            }
-            _ => (),
-        }
-    }
-
-    out
-}
-
 /// Eliminate dead storage load/store.
 pub fn dead_storage(cfg: &mut ControlFlowGraph, _ns: &mut Namespace) {
     // first calculate reaching definitions. We use a special case reaching definitions, which we track
@@ -521,7 +494,9 @@ pub fn dead_storage(cfg: &mut ControlFlowGraph, _ns: &mut Namespace) {
             let vars = &block_vars[&block_no][instr_no];
 
             match &cfg.blocks[block_no].instr[instr_no] {
-                Instr::LoadStorage { res, ty, storage } => {
+                Instr::LoadStorage {
+                    res, ty, storage, ..
+                } => {
                     // is there a definition which has the same storage expression
                     let mut found = None;
 
@@ -556,7 +531,11 @@ pub fn dead_storage(cfg: &mut ControlFlowGraph, _ns: &mut Namespace) {
                         cfg.blocks[block_no].instr[instr_no] = Instr::Set {
                             loc: Loc::Codegen,
                             res: *res,
-                            expr: Expression::Variable(Loc::Codegen, ty.clone(), *var_no),
+                            expr: Expression::Variable {
+                                loc: Loc::Codegen,
+                                ty: ty.clone(),
+                                var_no: *var_no,
+                            },
                         };
                     } else {
                         for (def, expr) in &vars.stores {
@@ -622,11 +601,7 @@ pub fn dead_storage(cfg: &mut ControlFlowGraph, _ns: &mut Namespace) {
             } = def
             {
                 // Function calls should never be eliminated from the CFG, as they might have side effects
-                // In addition, AbiDecode might fail and halt the execution.
-                if !matches!(
-                    cfg.blocks[*block_no].instr[*instr_no],
-                    Instr::Call { .. } | Instr::AbiDecode { .. }
-                ) {
+                if !matches!(cfg.blocks[*block_no].instr[*instr_no], Instr::Call { .. }) {
                     cfg.blocks[*block_no].instr[*instr_no] = Instr::Nop;
                 }
             }
@@ -720,14 +695,17 @@ fn expression_compare(
     block_vars: &BlockVars,
 ) -> ExpressionCmp {
     let v = match (left, right) {
-        (Expression::NumberLiteral(_, _, left), Expression::NumberLiteral(_, _, right)) => {
+        (
+            Expression::NumberLiteral { value: left, .. },
+            Expression::NumberLiteral { value: right, .. },
+        ) => {
             if left == right {
                 ExpressionCmp::Equal
             } else {
                 ExpressionCmp::NotEqual
             }
         }
-        (Expression::Keccak256(_, _, left), Expression::Keccak256(_, _, right)) => {
+        (Expression::Keccak256 { exprs: left, .. }, Expression::Keccak256 { exprs: right, .. }) => {
             // This could be written with fold_first() rather than collect(), but that is an unstable feature.
             // Also fold first does not short circuit
             let cmps: Vec<ExpressionCmp> = left
@@ -746,11 +724,14 @@ fn expression_compare(
                 first
             }
         }
-        (Expression::ZeroExt(_, _, left), Expression::ZeroExt(_, _, right))
-        | (Expression::Trunc(_, _, left), Expression::Trunc(_, _, right)) => {
+        (Expression::ZeroExt { expr: left, .. }, Expression::ZeroExt { expr: right, .. })
+        | (Expression::Trunc { expr: left, .. }, Expression::Trunc { expr: right, .. }) => {
             expression_compare(left, left_vars, right, right_vars, cfg, block_vars)
         }
-        (Expression::FunctionArg(_, _, left), Expression::FunctionArg(_, _, right)) => {
+        (
+            Expression::FunctionArg { arg_no: left, .. },
+            Expression::FunctionArg { arg_no: right, .. },
+        ) => {
             if left == right {
                 ExpressionCmp::Equal
             } else {
@@ -758,10 +739,54 @@ fn expression_compare(
                 ExpressionCmp::Unknown
             }
         }
-        (Expression::Add(_, _, _, l1, r1), Expression::Add(_, _, _, l2, r2))
-        | (Expression::Multiply(_, _, _, l1, r1), Expression::Multiply(_, _, _, l2, r2))
-        | (Expression::Subtract(_, _, _, l1, r1), Expression::Subtract(_, _, _, l2, r2))
-        | (Expression::Subscript(_, _, _, l1, r1), Expression::Subscript(_, _, _, l2, r2)) => {
+        (
+            Expression::Add {
+                left: l1,
+                right: r1,
+                ..
+            },
+            Expression::Add {
+                left: l2,
+                right: r2,
+                ..
+            },
+        )
+        | (
+            Expression::Multiply {
+                left: l1,
+                right: r1,
+                ..
+            },
+            Expression::Multiply {
+                left: l2,
+                right: r2,
+                ..
+            },
+        )
+        | (
+            Expression::Subtract {
+                left: l1,
+                right: r1,
+                ..
+            },
+            Expression::Subtract {
+                left: l2,
+                right: r2,
+                ..
+            },
+        )
+        | (
+            Expression::Subscript {
+                expr: l1,
+                index: r1,
+                ..
+            },
+            Expression::Subscript {
+                expr: l2,
+                index: r2,
+                ..
+            },
+        ) => {
             let l = expression_compare(l1, left_vars, l2, right_vars, cfg, block_vars);
 
             let r = expression_compare(r1, left_vars, r2, right_vars, cfg, block_vars);
@@ -776,7 +801,7 @@ fn expression_compare(
                 ExpressionCmp::Unknown
             }
         }
-        (Expression::Variable(_, _, left), Expression::Variable(_, _, right)) => {
+        (Expression::Variable { var_no: left, .. }, Expression::Variable { var_no: right, .. }) => {
             // let's check that the variable left has the same reaching definitions as right
             let left = match left_vars.vars.get(left) {
                 Some(left) => left,

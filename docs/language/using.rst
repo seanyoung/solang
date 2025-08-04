@@ -14,59 +14,49 @@ ______________________________________
 First, declare a function with one or more arguments. Once the function
 is bound with ``using``, it can be called like a method.
 
-.. code-block:: javascript
-
-    function mask(uint v, uint bits) returns (uint) {
-        return v & ((1 << bits) - 1);
-    }
-
-    function odd(uint v) returns (bool) {
-        return (v & 1) != 0;
-    }
-
-    contract c {
-        using {mask, odd} for *;
-
-        int v;
-
-        function set_v(int n) public {
-            v = n.mask(16);
-        }
-    }
+.. include:: ../examples/using.sol
+  :code: solidity
 
 The ``using`` declaration can be done on file scope. In this case, the type must
 be specified in place of ``*``. The first argument must match the type that is
 be used in the ``using`` declaration.
 
-If a user-defined type is used, the the ``global`` keyword can be used. This
+If a user-defined type is used, the ``global`` keyword can be used. This
 means the ``using`` binding can be used in any file, even when the type is
 imported.
 
-.. code-block:: solidity
-
-    struct User {
-        string name;
-        uint count;
-    }
-
-    function clear_count(User memory user) {
-        user.count = 0;
-    }
-
-    using {clear_count} for User global;
+.. include:: ../examples/using_global.sol
+  :code: solidity
 
 Now even when ``User`` is imported, the clear_count() method can be used.
 
+.. include:: ../examples/using_imports.sol
+  :code: solidity
 
-.. code-block:: solidity
+.. _user_defined_operators:
 
-    import {User} from "user.sol";
+User defined Operators
+______________________
 
-    contract c {
-        function foo(User memory user) {
-            user.clear_count();
-        }
-    }
+The ``using`` directive can be used to bind operators for :ref:`user defined types <user_defined_types>`
+to functions. A binding can be set for the operators: ``==``, ``!=``, ``>=``, ``>``, ``<=``, ``<``, ``~``,
+``&``, ``|``, ``^``, ``-`` (both negate and subtract), ``+``, ``*``, ``/``, and ``%``.
+
+First, declare a function with the correct prototype that implements the operator.
+
+* The function must be free standing: declared outside a contract.
+* The function must have ``pure`` mutability.
+* All the parameters must be the same user type.
+* The number of arguments depends on which operator is implemented; binary operators require two and unary operators, one.
+* The function must return either ``bool`` for the comparison operators, or the same user type as the parameters for the other operators.
+
+Then, bind the function to the operator using the syntax ``using {function-name as operator} for user-type global;``.
+Operators can only be defined with ``global`` set. Note that the ``-`` operator is
+used for two operators: subtract and negate. In order to bind the unary negate operator,
+the function must have a single parameter. For the subtract operator, two parameters are required.
+
+.. include:: ../examples/user_defined_operators.sol
+   :code: solidity
 
 ``using`` with libraries
 ________________________

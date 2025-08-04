@@ -2,9 +2,9 @@
 
 The Solang Solidity Compiler compiles Solidity for the following blockchains:
 
-- Parity Substrate
+- Polkadot
 - Solana
-- ewasm
+- evm (enough for the extension)
 
 This extension provides syntax highlighting, diagnostics  (i.e. compiler warnings and errors), and information on types and functions when hovering.
 
@@ -16,7 +16,7 @@ For more information on Solang itself and the extension, please go to the [docum
 ## Dependencies
 
 The solang compiler executable needs to be installed, which can be downloaded from
-the [Solang Releases Page](https://github.com/hyperledger-labs/solang/releases). Then
+the [Solang Releases Page](https://github.com/hyperledger-solang/solang/releases). Then
 you have to configure the path to the solang executable extension settings, and also
 which target you wish to compile file.
 
@@ -24,7 +24,7 @@ Please see the [extension documentation](https://solang.readthedocs.io/en/latest
 
 ## References
 
-Files solidity.configuration.json, syntaxes/solidity.json reffered from https://github.com/juanfranblanco/vscode-solidity
+Files solidity.configuration.json, syntaxes/solidity.json referred from https://github.com/juanfranblanco/vscode-solidity
 
 Commit hash: e22c566909a18ae646cbc41ea3e788222c8377a6
 

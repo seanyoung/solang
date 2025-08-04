@@ -3,9 +3,14 @@
 	"displayName": "Solang Solidity Compiler",
 	"description": "Use the solang compiler for syntax highlighting, compiler warnings and errors, and hovers",
 	"publisher": "solang",
-	"author": "Shivam Balikondwar <shivambalikondwar@icloud.com>",
-	"version": "0.3.0",
-	"repository": "github.com/hyperledger-labs/solang",
+	"icon": "hl_solang.png",
+	"contributors": [
+		"Shivam Balikondwar <shivambalikondwar@icloud.com>",
+		"Govardhan G D <chioni1620@gmail.com>",
+		"Sean Young <sean@mess.org>"
+	],
+	"version": "0.3.4",
+	"repository": "github.com/hyperledger/solang",
 	"engines": {
 		"vscode": "^1.43.0"
 	},
@@ -26,8 +31,8 @@
 					"type": "string",
 					"enum": [
 						"solana",
-						"substrate",
-						"ewasm"
+						"polkadot",
+						"evm"
 					],
 					"default": "solana",
 					"description": "Chain to build for. The Solidity language changes in subtle ways depending on the target."
@@ -37,15 +42,23 @@
 					"default": false,
 					"description": "Whether to ask for permission before downloading any files from the Internet"
 				},
-				"solang.forceSolangExecutable": {
+				"solidity.trace.server": {
+					"scope": "window",
 					"type": "string",
-					"default": "",
-					"description": "Use the executable at this path and do not download or update solang. Leave this empty for automatic download."
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "verbose"
 				}
 			}
 		},
 		"capabilities": {
-			"hoverProvider": "true"
+			"hoverProvider": "true",
+			"formatting": {
+				"dynamicRegistration": true
+			}
 		},
 		"languages": [
 			{
@@ -93,21 +106,23 @@
 	"devDependencies": {
 		"@types/glob": "^7.1.1",
 		"@types/mocha": "^7.0.2",
-		"@types/node": "^12.12.0",
-		"@types/node-fetch": "^2.5.8",
+		"@types/node": "^18.11.9",
+		"@types/node-fetch": "^2.6.11",
 		"@types/semver": "^7.3.8",
 		"@types/vscode": "^1.43.0 <1.69.0",
 		"@typescript-eslint/eslint-plugin": "^4.15.0",
 		"@typescript-eslint/parser": "^4.15.0",
+		"@vscode/test-electron": "^1.6.2",
 		"eslint": ">=7.0.0",
 		"glob": "^7.1.6",
 		"mocha": "^7.1.2",
-		"typescript": "^3.8.3",
-		"@vscode/test-electron": "^1.6.2"
+		"tap": "^21.0.1",
+		"tape": "^5.9.0",
+		"typescript": "^5.3.3"
 	},
 	"__metadata": {
 		"id": "3134b20d-911a-4418-a461-3f2380f4a1c2",
-		"publisherDisplayName": "solang.io",
+		"publisherDisplayName": "Hyperledger Solang",
 		"publisherId": "6c1a8c6d-5493-4493-81d2-e899244f0def",
 		"isPreReleaseVersion": false
 	}

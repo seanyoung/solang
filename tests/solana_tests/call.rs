@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{build_solidity, create_program_address, Instruction, Pubkey, VirtualMachine};
+use crate::{
+    build_solidity, create_program_address, AccountState, BorshToken, Instruction, Pubkey,
+    VirtualMachine,
+};
 use base58::FromBase58;
-use ethabi::{ethereum_types::U256, Token};
+use num_bigint::BigInt;
+use num_traits::One;
 
 #[test]
 fn simple_external_call() {
@@ -10,52 +14,54 @@ fn simple_external_call() {
         r#"
         contract bar0 {
             function test_bar(string v) public {
-                print("bar0 says: " + v);
+                print(string.concat("bar0", " ", "says: ", v, ""));
             }
 
-            function test_other(bar1 x) public {
-                x.test_bar("cross contract call");
+            @account(pid)
+            function test_other() external {
+                bar1.test_bar{program_id: tx.accounts.pid.key}("cross contract call");
             }
         }
 
         contract bar1 {
             function test_bar(string v) public {
-                print("bar1 says: " + v);
+                print(string.concat("bar1 says: ", v));
             }
         }"#,
     );
 
-    vm.constructor("bar1", &[]);
+    let bar1_account = vm.initialize_data_account();
+    let bar1_program_id = vm.stack[0].id;
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar1_account)])
+        .call();
 
-    vm.function("test_bar", &[Token::String(String::from("yo"))], &[], None);
+    vm.function("test_bar")
+        .arguments(&[BorshToken::String(String::from("yo"))])
+        .call();
 
     assert_eq!(vm.logs, "bar1 says: yo");
 
     vm.logs.truncate(0);
 
-    let bar1_account = vm.stack[0].data;
-
     vm.set_program(0);
 
-    vm.constructor("bar0", &[]);
+    let bar0_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar0_account)])
+        .call();
 
-    vm.function(
-        "test_bar",
-        &[Token::String(String::from("uncle beau"))],
-        &[],
-        None,
-    );
+    vm.function("test_bar")
+        .arguments(&[BorshToken::String(String::from("uncle beau"))])
+        .call();
 
     assert_eq!(vm.logs, "bar0 says: uncle beau");
 
     vm.logs.truncate(0);
 
-    vm.function(
-        "test_other",
-        &[Token::FixedBytes(bar1_account.to_vec())],
-        &[],
-        None,
-    );
+    vm.function("test_other")
+        .accounts(vec![("pid", bar1_program_id), ("systemProgram", [0; 32])])
+        .call();
 
     assert_eq!(vm.logs, "bar1 says: cross contract call");
 }
@@ -65,8 +71,9 @@ fn external_call_with_returns() {
     let mut vm = build_solidity(
         r#"
         contract bar0 {
-            function test_other(bar1 x) public returns (int64) {
-                return x.test_bar(7) + 5;
+            @account(pid)
+            function test_other() external returns (int64) {
+                return bar1.test_bar{program_id: tx.accounts.pid.key}(7) + 5;
             }
         }
 
@@ -77,26 +84,49 @@ fn external_call_with_returns() {
         }"#,
     );
 
-    vm.constructor("bar1", &[]);
+    let bar1_account = vm.initialize_data_account();
+    let bar1_program_id = vm.stack[0].id;
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar1_account)])
+        .call();
 
-    let res = vm.function("test_bar", &[Token::Int(U256::from(21))], &[], None);
+    let res = vm
+        .function("test_bar")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(21),
+        }])
+        .call()
+        .unwrap();
 
-    assert_eq!(res, vec![Token::Int(U256::from(24))]);
-
-    let bar1_account = vm.stack[0].data;
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(24u8)
+        }
+    );
 
     vm.set_program(0);
 
-    vm.constructor("bar0", &[]);
+    let bar0_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar0_account)])
+        .call();
 
-    let res = vm.function(
-        "test_other",
-        &[Token::FixedBytes(bar1_account.to_vec())],
-        &[],
-        None,
+    let res = vm
+        .function("test_other")
+        .accounts(vec![("pid", bar1_program_id), ("systemProgram", [0; 32])])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(15u8)
+        }
     );
-
-    assert_eq!(res, vec![Token::Int(U256::from(15))]);
 }
 
 #[test]
@@ -104,13 +134,14 @@ fn external_raw_call_with_returns() {
     let mut vm = build_solidity(
         r#"
         contract bar0 {
-            bytes4 private constant SELECTOR = bytes4(keccak256(bytes('test_bar(int64)')));
+            bytes8 private constant SELECTOR = bytes8(sha256(bytes('global:test_bar')));
 
-            function test_other(bar1 x) public returns (int64) {
+            @account(bar1_pid)
+            function test_other() external returns (int64) {
                 bytes select = abi.encodeWithSelector(SELECTOR, int64(7));
-                bytes signature = abi.encodeWithSignature("test_bar(int64)", int64(7));
+                bytes signature = abi.encodeWithSignature("global:test_bar", int64(7));
                 require(select == signature, "must be the same");
-                (, bytes raw) = address(x).call(signature);
+                (, bytes raw) = tx.accounts.bar1_pid.key.call{accounts: []}(signature);
                 (int64 v) = abi.decode(raw, (int64));
                 return v + 5;
             }
@@ -123,26 +154,52 @@ fn external_raw_call_with_returns() {
         }"#,
     );
 
-    vm.constructor("bar1", &[]);
+    let bar1_account = vm.initialize_data_account();
+    let bar1_program_id = vm.stack[0].id;
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar1_account)])
+        .call();
 
-    let res = vm.function("test_bar", &[Token::Int(U256::from(21))], &[], None);
+    let res = vm
+        .function("test_bar")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(21u8),
+        }])
+        .call()
+        .unwrap();
 
-    assert_eq!(res, vec![Token::Int(U256::from(24))]);
-
-    let bar1_account = vm.stack[0].data;
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(24u8),
+        }
+    );
 
     vm.set_program(0);
 
-    vm.constructor("bar0", &[]);
+    let bar0_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar0_account)])
+        .call();
 
-    let res = vm.function(
-        "test_other",
-        &[Token::FixedBytes(bar1_account.to_vec())],
-        &[],
-        None,
+    let res = vm
+        .function("test_other")
+        .accounts(vec![
+            ("bar1_pid", bar1_program_id),
+            ("systemProgram", [0; 32]),
+        ])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(15u8),
+        }
     );
-
-    assert_eq!(res, vec![Token::Int(U256::from(15))]);
 }
 
 #[test]
@@ -158,20 +215,37 @@ fn call_external_func_type() {
     function doTest() public view returns (int, int) {
     function(int) external pure returns (int, int) sfPtr = this.testPtr;
 
-       (int a, int b) = sfPtr(2);
+       (int a, int b) = sfPtr{accounts: []}(2);
        return (a, b);
     }
 }
     "#,
     );
 
-    vm.constructor("testing", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let res = vm.function("doTest", &[], &[], None);
+    let res = vm
+        .function("doTest")
+        .accounts(vec![("systemProgram", [0; 32])])
+        .call()
+        .unwrap()
+        .unwrap_tuple();
 
     assert_eq!(
         res,
-        vec![Token::Int(U256::from(1)), Token::Int(U256::from(3))]
+        vec![
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::one(),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(3u8)
+            }
+        ]
     );
 }
 
@@ -180,19 +254,17 @@ fn external_call_with_string_returns() {
     let mut vm = build_solidity(
         r#"
         contract bar0 {
-            function test_other(bar1 x) public returns (string) {
-                string y = x.test_bar(7);
+            @account(pid)
+            function test_other() external returns (string) {
+                string y = bar1.test_bar{program_id: tx.accounts.pid.key}(7);
                 print(y);
                 return y;
             }
 
-            function test_this(bar1 x) public {
-                address a = x.who_am_i();
-                assert(a == address(x));
-            }
-
-            function test_sender(bar1 x) public returns (address) {
-                return x.who_is_sender();
+            @account(pid)
+            function test_this() external {
+                address a = bar1.who_am_i{program_id: tx.accounts.pid.key}();
+                assert(a == tx.accounts.pid.key);
             }
         }
 
@@ -204,51 +276,44 @@ fn external_call_with_string_returns() {
             function who_am_i() public returns (address) {
                 return address(this);
             }
-
-            function who_is_sender() public returns (address) {
-                return msg.sender;
-            }
         }"#,
     );
 
-    vm.constructor("bar1", &[]);
+    let bar1_account = vm.initialize_data_account();
+    let bar1_program_id = vm.stack[0].id;
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar1_account)])
+        .call();
 
-    let res = vm.function("test_bar", &[Token::Int(U256::from(22))], &[], None);
+    let res = vm
+        .function("test_bar")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(22u8),
+        }])
+        .call()
+        .unwrap();
 
-    assert_eq!(res, vec![Token::String(String::from("foo:22"))]);
-
-    let bar1_account = vm.stack[0].data;
+    assert_eq!(res, BorshToken::String(String::from("foo:22")));
 
     vm.set_program(0);
 
-    vm.constructor("bar0", &[]);
+    let bar0_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar0_account)])
+        .call();
 
-    let bar0_account = vm.stack[0].data;
+    let res = vm
+        .function("test_other")
+        .accounts(vec![("pid", bar1_program_id), ("systemProgram", [0; 32])])
+        .call()
+        .unwrap();
 
-    let res = vm.function(
-        "test_other",
-        &[Token::FixedBytes(bar1_account.to_vec())],
-        &[],
-        None,
-    );
+    assert_eq!(res, BorshToken::String(String::from("foo:7")));
 
-    assert_eq!(res, vec![Token::String(String::from("foo:7"))]);
-
-    vm.function(
-        "test_this",
-        &[Token::FixedBytes(bar1_account.to_vec())],
-        &[],
-        None,
-    );
-
-    let res = vm.function(
-        "test_sender",
-        &[Token::FixedBytes(bar1_account.to_vec())],
-        &[],
-        None,
-    );
-
-    assert_eq!(res[0], Token::FixedBytes(bar0_account.to_vec()));
+    vm.function("test_this")
+        .accounts(vec![("pid", bar1_program_id), ("systemProgram", [0; 32])])
+        .call();
 }
 
 #[test]
@@ -256,45 +321,103 @@ fn encode_call() {
     let mut vm = build_solidity(
         r#"
         contract bar0 {
-            bytes4 private constant SELECTOR = bytes4(keccak256(bytes('test_bar(int64)')));
+            bytes8 private constant SELECTOR = bytes8(sha256(bytes('global:test_bar')));
+            bytes8 private constant SELECTOR2 = bytes8(sha256(bytes('global:test_baz')));
 
-            function test_other(bar1 x) public returns (int64) {
+            @account(bar1_pid)
+            function test_other() external returns (int64) {
                 bytes select = abi.encodeWithSelector(SELECTOR, int64(7));
                 bytes signature = abi.encodeCall(bar1.test_bar, 7);
                 require(select == signature, "must be the same");
-                (, bytes raw) = address(x).call(signature);
+                (, bytes raw) = tx.accounts.bar1_pid.key.call{accounts: []}(signature);
+                (int64 v) = abi.decode(raw, (int64));
+                return v + 5;
+            }
+
+            @account(bar1_pid)
+            function test_other2() external returns (int64) {
+                bytes select = abi.encodeWithSelector(SELECTOR2, int64(7), int64(5));
+                bytes signature = abi.encodeCall(bar1.test_baz, (7, 5));
+                require(select == signature, "must be the same");
+                (, bytes raw) = tx.accounts.bar1_pid.key.call{accounts: []}(signature);
                 (int64 v) = abi.decode(raw, (int64));
                 return v + 5;
             }
         }
 
         contract bar1 {
-            function test_bar(int64 y) public returns (int64) {
+            function test_bar(int64 y) public pure returns (int64) {
                 return 3 + y;
+            }
+            function test_baz(int64 y, int64 x) public pure returns (int64) {
+                return 3 + y + x;
             }
         }"#,
     );
 
-    vm.constructor("bar1", &[]);
+    let bar1_account = vm.initialize_data_account();
+    let bar1_program_id = vm.stack[0].id;
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar1_account)])
+        .call();
 
-    let res = vm.function("test_bar", &[Token::Int(U256::from(21))], &[], None);
+    let res = vm
+        .function("test_bar")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(21u8),
+        }])
+        .call()
+        .unwrap();
 
-    assert_eq!(res, vec![Token::Int(U256::from(24))]);
-
-    let bar1_account = vm.stack[0].data;
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(24u8)
+        }
+    );
 
     vm.set_program(0);
 
-    vm.constructor("bar0", &[]);
+    let bar0_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", bar0_account)])
+        .call();
 
-    let res = vm.function(
-        "test_other",
-        &[Token::FixedBytes(bar1_account.to_vec())],
-        &[],
-        None,
+    let res = vm
+        .function("test_other")
+        .accounts(vec![
+            ("bar1_pid", bar1_program_id),
+            ("systemProgram", [0; 32]),
+        ])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(15u8)
+        }
     );
 
-    assert_eq!(res, vec![Token::Int(U256::from(15))]);
+    let res = vm
+        .function("test_other2")
+        .accounts(vec![
+            ("bar1_pid", bar1_program_id),
+            ("systemProgram", [0; 32]),
+        ])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(20u8)
+        }
+    );
 }
 
 #[test]
@@ -326,33 +449,74 @@ fn internal_function_storage() {
         }"#,
     );
 
-    vm.constructor("ft", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let res = vm.function("set_op", &[Token::Bool(true)], &[], None);
+    let res = vm
+        .function("set_op")
+        .arguments(&[BorshToken::Bool(true)])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    assert_eq!(res, vec![]);
+    assert!(res.is_none());
 
-    let res = vm.function(
-        "test",
-        &[Token::Int(U256::from(3)), Token::Int(U256::from(5))],
-        &[],
-        None,
+    let res = vm
+        .function("test")
+        .arguments(&[
+            BorshToken::Int {
+                width: 32,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Int {
+                width: 32,
+                value: BigInt::from(5u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 32,
+            value: BigInt::from(15u8)
+        }
     );
 
-    assert_eq!(res, vec![Token::Int(U256::from(15))]);
+    let res = vm
+        .function("set_op")
+        .arguments(&[BorshToken::Bool(false)])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let res = vm.function("set_op", &[Token::Bool(false)], &[], None);
+    assert!(res.is_none());
 
-    assert_eq!(res, vec![]);
+    let res = vm
+        .function("test")
+        .arguments(&[
+            BorshToken::Int {
+                width: 32,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Int {
+                width: 32,
+                value: BigInt::from(5u8),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    let res = vm.function(
-        "test",
-        &[Token::Int(U256::from(3)), Token::Int(U256::from(5))],
-        &[],
-        None,
+    assert_eq!(
+        res,
+        BorshToken::Int {
+            width: 32,
+            value: BigInt::from(8u8)
+        }
     );
-
-    assert_eq!(res, vec![Token::Int(U256::from(8))]);
 }
 
 #[test]
@@ -392,7 +556,10 @@ fn raw_call_accounts() {
         }"#,
     );
 
-    vm.constructor("SplToken", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     let token = Pubkey(
         "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -401,6 +568,7 @@ fn raw_call_accounts() {
             .try_into()
             .unwrap(),
     );
+    vm.account_data.insert(token.0, AccountState::default());
 
     let test_args = |_vm: &VirtualMachine, instr: &Instruction, _signers: &[Pubkey]| {
         let sysvar_rent = Pubkey(
@@ -436,18 +604,19 @@ fn raw_call_accounts() {
         assert_eq!(instr.accounts[1].pubkey, sysvar_rent);
     };
 
-    vm.call_params_check.insert(token, test_args);
+    vm.call_params_check.insert(token.clone(), test_args);
 
-    vm.function(
-        "create_mint_with_freezeauthority",
-        &[
-            Token::Uint(U256::from(11)),
-            Token::FixedBytes(b"quinquagintaquadringentilliardth".to_vec()),
-            Token::FixedBytes(b"quinquagintaquadringentillionths".to_vec()),
-        ],
-        &[],
-        None,
-    );
+    vm.function("create_mint_with_freezeauthority")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 8,
+                value: BigInt::from(11u8),
+            },
+            BorshToken::Address(b"quinquagintaquadringentilliardth".to_owned()),
+            BorshToken::Address(b"quinquagintaquadringentillionths".to_owned()),
+        ])
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .call();
 }
 
 #[test]
@@ -467,21 +636,38 @@ fn pda() {
                     AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
                 ];
 
-                tokenProgramId.call{seeds: [ ["foo"], ["b", "a", "r"] ], accounts: metas}(instr);
+                bytes3 foo = "foo";
+                address addr = address"8dtukUTHTZoVQTA5i4UdC2z6A2b5yvnJhkzhYnwAk3Fm";
+
+                tokenProgramId.call{seeds: [ [ foo ] , ["b", "a", "r"], [addr], [foo, addr, "meh"] ], accounts: metas}(instr);
             }
         }"#,
     );
 
-    vm.constructor("pda", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
         assert_eq!(
             signers[0],
-            create_program_address(&vm.stack[0].program, &[b"foo"])
+            create_program_address(&vm.stack[0].id, &[b"foo"])
         );
         assert_eq!(
             signers[1],
-            create_program_address(&vm.stack[0].program, &[b"bar"])
+            create_program_address(&vm.stack[0].id, &[b"bar"])
+        );
+        assert_eq!(
+            signers[2],
+            create_program_address(&vm.stack[0].id, &[b"quinquagintaquadringentilliardth"])
+        );
+        assert_eq!(
+            signers[3],
+            create_program_address(
+                &vm.stack[0].id,
+                &[b"fooquinquagintaquadringentilliardthmeh"]
+            )
         );
     };
 
@@ -493,7 +679,590 @@ fn pda() {
             .unwrap(),
     );
 
-    vm.call_params_check.insert(token, test_args);
+    vm.account_data.insert(token.0, AccountState::default());
+    vm.call_params_check.insert(token.clone(), test_args);
 
-    vm.function("test", &[], &[], None);
+    vm.function("test")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .call();
+}
+
+#[test]
+fn pda_array() {
+    // now more dynamic
+    let mut vm = build_solidity(
+        r#"
+            import {AccountMeta} from 'solana';
+
+            contract pda {
+                address constant tokenProgramId = address"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+                address constant SYSVAR_RENT_PUBKEY = address"SysvarRent111111111111111111111111111111111";
+
+                function test(bytes[] dyn, address[] addr, bytes5[] b5) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    bytes3 foo = "foo";
+
+                    tokenProgramId.call{seeds: [ dyn, addr, b5 ], accounts: metas}(instr);
+                }
+            }"#,
+    );
+
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"foobar"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(
+                &vm.stack[0].id,
+                &[
+                    b"quinquagintaquadringentilliardth",
+                    b"quinquagintaquadringentillionths"
+                ]
+            )
+        );
+        assert_eq!(
+            signers[2],
+            create_program_address(&vm.stack[0].id, &[b"tares", b"enoki"])
+        );
+    };
+
+    let token = Pubkey(
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .from_base58()
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+
+    vm.account_data.insert(token.0, AccountState::default());
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"foo".to_vec()),
+                BorshToken::Bytes(b"bar".to_vec()),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::Address(*b"quinquagintaquadringentilliardth"),
+                BorshToken::Address(*b"quinquagintaquadringentillionths"),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::FixedBytes(b"tares".to_vec()),
+                BorshToken::FixedBytes(b"enoki".to_vec()),
+            ]),
+        ])
+        .call();
+}
+
+#[test]
+fn pda_array_of_array() {
+    // now more dynamic
+    let mut vm = build_solidity(
+        r#"
+            import {AccountMeta} from 'solana';
+
+            contract pda {
+                address constant tokenProgramId = address"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+                address constant SYSVAR_RENT_PUBKEY = address"SysvarRent111111111111111111111111111111111";
+
+                function test_bytes(bytes[][] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: seeds, accounts: metas}(instr);
+                }
+
+                function test_string(string[][] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: seeds, accounts: metas}(instr);
+                }
+
+                function test_bytes4(bytes4[][] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: seeds, accounts: metas}(instr);
+                }
+
+                function test_addr(address[][] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: seeds, accounts: metas}(instr);
+                }
+            }"#,
+    );
+
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let token = Pubkey(
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .from_base58()
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+
+    vm.account_data.insert(token.0, AccountState::default());
+
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(signers.len(), 2);
+
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"foobar"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(
+                &vm.stack[0].id,
+                &[b"zemmiphobia", b"extemporaneousness", b"automysophobia"]
+            )
+        );
+    };
+
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_bytes")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"foo".to_vec()),
+                BorshToken::Bytes(b"bar".to_vec()),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"zemmiphobia".to_vec()),
+                BorshToken::Bytes(b"extemporaneousness".to_vec()),
+                BorshToken::Bytes(b"automysophobia".to_vec()),
+            ]),
+        ])])
+        .call();
+
+    // test string
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"Finifugal", b"Falsiloquence"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(&vm.stack[0].id, &[b"Obrotund"])
+        );
+    };
+
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_string")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"Finifugal".to_vec()),
+                BorshToken::Bytes(b"Falsiloquence".to_vec()),
+            ]),
+            BorshToken::Array(vec![BorshToken::Bytes(b"Obrotund".to_vec())]),
+        ])])
+        .call();
+
+    // test address
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(
+            signers[0],
+            create_program_address(
+                &vm.stack[0].id,
+                &[
+                    b"quinquagintaquadringentilliardth",
+                    b"quinquagintaquadringentillionths"
+                ]
+            )
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(
+                &vm.stack[0].id,
+                &[
+                    b"quinquagintaquadringentilliardt1",
+                    b"quinquagintaquadringentilliardt2",
+                    b"quinquagintaquadringentilliardt3"
+                ]
+            )
+        );
+    };
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_addr")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::Array(vec![
+                BorshToken::Address(*b"quinquagintaquadringentilliardth"),
+                BorshToken::Address(*b"quinquagintaquadringentillionths"),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::Address(*b"quinquagintaquadringentilliardt1"),
+                BorshToken::Address(*b"quinquagintaquadringentilliardt2"),
+                BorshToken::Address(*b"quinquagintaquadringentilliardt3"),
+            ]),
+        ])])
+        .call();
+
+    // test bytes4
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"foofbarf"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(&vm.stack[0].id, &[b"drat", b"plop", b"dang"])
+        );
+    };
+
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_bytes4")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::Array(vec![
+                BorshToken::FixedBytes(b"foof".to_vec()),
+                BorshToken::FixedBytes(b"barf".to_vec()),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::FixedBytes(b"drat".to_vec()),
+                BorshToken::FixedBytes(b"plop".to_vec()),
+                BorshToken::FixedBytes(b"dang".to_vec()),
+            ]),
+        ])])
+        .call();
+}
+
+#[test]
+fn pda_array_of_array_fixed() {
+    // now more dynamic
+    let mut vm = build_solidity(
+        r#"
+            import {AccountMeta} from 'solana';
+
+            contract pda {
+                address constant tokenProgramId = address"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+                address constant SYSVAR_RENT_PUBKEY = address"SysvarRent111111111111111111111111111111111";
+
+                function test_bytes(bytes[2][] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: seeds, accounts: metas}(instr);
+                }
+
+                function test_string(string[1][2] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: seeds, accounts: metas}(instr);
+                }
+
+                function test_addr(address[][2] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: seeds, accounts: metas}(instr);
+                }
+            }"#,
+    );
+
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let token = Pubkey(
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .from_base58()
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+
+    vm.account_data.insert(token.0, AccountState::default());
+
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"foobar"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(&vm.stack[0].id, &[b"zemmiphobia", b"extemporaneousness"])
+        );
+    };
+
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_bytes")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::FixedArray(vec![
+                BorshToken::Bytes(b"foo".to_vec()),
+                BorshToken::Bytes(b"bar".to_vec()),
+            ]),
+            BorshToken::FixedArray(vec![
+                BorshToken::Bytes(b"zemmiphobia".to_vec()),
+                BorshToken::Bytes(b"extemporaneousness".to_vec()),
+            ]),
+        ])])
+        .call();
+
+    // test string
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"Finifugal"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(&vm.stack[0].id, &[b"Obrotund"])
+        );
+    };
+
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_string")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::FixedArray(vec![
+            BorshToken::FixedArray(vec![BorshToken::Bytes(b"Finifugal".to_vec())]),
+            BorshToken::FixedArray(vec![BorshToken::Bytes(b"Obrotund".to_vec())]),
+        ])])
+        .call();
+
+    // // test address
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(
+            signers[0],
+            create_program_address(
+                &vm.stack[0].id,
+                &[
+                    b"quinquagintaquadringentilliardth",
+                    b"quinquagintaquadringentillionths"
+                ]
+            )
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(
+                &vm.stack[0].id,
+                &[
+                    b"quinquagintaquadringentilliardt1",
+                    b"quinquagintaquadringentilliardt2",
+                    b"quinquagintaquadringentilliardt3"
+                ]
+            )
+        );
+    };
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_addr")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::FixedArray(vec![
+            BorshToken::Array(vec![
+                BorshToken::Address(*b"quinquagintaquadringentilliardth"),
+                BorshToken::Address(*b"quinquagintaquadringentillionths"),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::Address(*b"quinquagintaquadringentilliardt1"),
+                BorshToken::Address(*b"quinquagintaquadringentilliardt2"),
+                BorshToken::Address(*b"quinquagintaquadringentilliardt3"),
+            ]),
+        ])])
+        .call();
+}
+
+#[test]
+fn pda_array_of_array_mixed() {
+    // now more dynamic
+    let mut vm = build_solidity(
+        r#"
+            import {AccountMeta} from 'solana';
+
+            contract pda {
+                address constant tokenProgramId = address"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+                address constant SYSVAR_RENT_PUBKEY = address"SysvarRent111111111111111111111111111111111";
+
+                function test(bytes[] dyn, address[] addr, bytes5[] b5, string f) public {
+                    bytes instr = new bytes(1);
+                    instr[0] = 0x95;
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+                    tokenProgramId.call{seeds: [ dyn, addr, b5, [f] ], accounts: metas}(instr);
+                }
+
+                function test_bytes2(bytes[][] seeds) public {
+                    bytes instr = new bytes(1);
+
+                    instr[0] = 0x95;
+
+                    AccountMeta[1] metas = [
+                        AccountMeta({pubkey: SYSVAR_RENT_PUBKEY, is_writable: false, is_signer: false})
+                    ];
+
+                    tokenProgramId.call{seeds: [seeds[0], seeds[1]], accounts: metas}(instr);
+                }
+            }"#,
+    );
+
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let token = Pubkey(
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .from_base58()
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+
+    vm.account_data.insert(token.0, AccountState::default());
+
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(signers.len(), 4);
+
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"foobar"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(
+                &vm.stack[0].id,
+                &[
+                    b"quinquagintaquadringentilliardt1",
+                    b"quinquagintaquadringentilliardt2",
+                    b"quinquagintaquadringentilliardt3"
+                ]
+            )
+        );
+        assert_eq!(
+            signers[2],
+            create_program_address(&vm.stack[0].id, &[b"azure", b"squab", b"tares"])
+        );
+        assert_eq!(
+            signers[3],
+            create_program_address(&vm.stack[0].id, &[b"penultimatum"])
+        );
+    };
+
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"foo".to_vec()),
+                BorshToken::Bytes(b"bar".to_vec()),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::Address(*b"quinquagintaquadringentilliardt1"),
+                BorshToken::Address(*b"quinquagintaquadringentilliardt2"),
+                BorshToken::Address(*b"quinquagintaquadringentilliardt3"),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::FixedBytes(b"azure".to_vec()),
+                BorshToken::FixedBytes(b"squab".to_vec()),
+                BorshToken::FixedBytes(b"tares".to_vec()),
+            ]),
+            BorshToken::String("penultimatum".into()),
+        ])
+        .call();
+
+    let test_args = |vm: &VirtualMachine, _instr: &Instruction, signers: &[Pubkey]| {
+        assert_eq!(signers.len(), 2);
+
+        assert_eq!(
+            signers[0],
+            create_program_address(&vm.stack[0].id, &[b"foobar"])
+        );
+        assert_eq!(
+            signers[1],
+            create_program_address(
+                &vm.stack[0].id,
+                &[b"zemmiphobia", b"extemporaneousness", b"automysophobia"]
+            )
+        );
+    };
+    vm.call_params_check.insert(token.clone(), test_args);
+
+    vm.function("test_bytes2")
+        .accounts(vec![("tokenProgram", token.0), ("systemProgram", [0; 32])])
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"foo".to_vec()),
+                BorshToken::Bytes(b"bar".to_vec()),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"zemmiphobia".to_vec()),
+                BorshToken::Bytes(b"extemporaneousness".to_vec()),
+                BorshToken::Bytes(b"automysophobia".to_vec()),
+            ]),
+            BorshToken::Array(vec![
+                BorshToken::Bytes(b"ignore".to_vec()),
+                BorshToken::Bytes(b"this".to_vec()),
+            ]),
+        ])])
+        .call();
 }

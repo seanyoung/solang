@@ -1,19 +1,26 @@
+.. image:: hl_solang_horizontal-color.svg
+    :width: 75%
+    :alt: Hyperledger Solang Logo
+    :align: center
+    :target: https://github.com/hyperledger-solang/solang
+
+|
+
 Solang Solidity Compiler
 ========================
 
 Welcome to the Solang Solidity Compiler. Using Solang, you can compile smart contracts written in
 `Solidity <https://en.wikipedia.org/wiki/Solidity>`_ for
-`Solana <https://www.solana.com/>`_,
-`Parity Substrate <https://substrate.io/>`_, and
-`Ethereum ewasm <https://github.com/ewasm/design>`_. It uses the
+`Solana <https://www.solana.com/>`_ and
+`Polkadot <https://substrate.io/>`_. It uses the
 `llvm <https://www.llvm.org/>`_ compiler framework to produce WebAssembly
-(wasm) or BPF contract code. As result, the output is highly optimized, which saves you in gas costs.
+(WASM) or Solana SBF contract code. As result, the output is highly optimized, which saves you in gas costs
+or compute units.
 
 Solang aims for source file compatibility with the Ethereum EVM Solidity compiler,
-version 0.8. Where differences exists, this is noted in the language documentation.
-The source code repository can be found on `github <https://github.com/hyperledger-labs/solang>`_
-and we have a `channel #solang on Hyperledger Discord <https://discord.gg/jhn4rkqNsT>`_, and
-a `channel #solang-solidity-compiler on Solana Discord <https://discord.gg/TmE2Ek5ZbW>`_.
+version 0.8. Where differences exist, this is noted in the language documentation.
+The source code repository can be found on `github <https://github.com/hyperledger-solang/solang>`_
+and we have solang channels on `Hyperledger Discord <https://discord.gg/hyperledger>`_.
 
 Contents
 ========
@@ -24,6 +31,7 @@ Contents
 
    installing
    running
+   aqd
    extension
    examples
 
@@ -32,8 +40,8 @@ Contents
    :caption: Targets
 
    targets/solana.rst
-   targets/substrate.rst
-   targets/burrow.rst
+   targets/polkadot.rst
+   targets/soroban.rst
 
 .. toctree::
    :maxdepth: 3
@@ -72,7 +80,7 @@ Contents
    :maxdepth: 3
    :caption: Extras
 
-   optimizer
+   code_gen_options
    testing
    contributing
 

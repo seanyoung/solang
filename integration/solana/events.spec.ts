@@ -1,50 +1,29 @@
-import expect from 'expect';
-import { loadContract } from './setup';
+// SPDX-License-Identifier: Apache-2.0
 
-describe('Deploy solang contract and test', function () {
+import expect from 'expect';
+import { loadContractAndCallConstructor } from './setup';
+
+describe('Test events', function () {
     this.timeout(500000);
 
     it('events', async function () {
-        const { contract } = await loadContract('events', 'events.abi');
+        const { program, storage } = await loadContractAndCallConstructor('MyContractEvents');
 
-        await new Promise((resolve) => {
-            let first = true;
-            let listenId = contract.addEventListener(async (ev) => {
+        const res = await program.methods.test()
+            .simulate();
 
-                if (first) {
-                    expect(Number(ev.args[0])).toEqual(102);
-                    expect(ev.args[1]).toEqual(true);
-                    expect(ev.args[2]).toEqual('foobar');
+        const event1 = res.events[0];
 
-                    first = false;
-                } else {
-                    expect(Number(ev.args[0])).toEqual(500332);
-                    expect(ev.args[1]).toEqual("0x41424344");
-                    expect(ev.args[2]).toEqual("0xcafe0123");
-                }
+        expect(event1.name).toEqual('First');
+        expect(event1.data.a).toEqual(102);
+        expect(event1.data.b).toEqual(true);
+        expect(event1.data.c).toEqual('foobar');
 
-                await contract.removeEventListener(listenId);
-                resolve(true);
-            });
+        const event2 = res.events[1];
 
-            contract.functions.test();
-        });
-
-        let res = await contract.functions.test({ simulate: true });
-
-        expect(res.result).toBeNull();
-        expect(res.events.length).toBe(2);
-
-        let args = res.events[0].args;
-
-        expect(Number(args[0])).toEqual(102);
-        expect(args[1]).toEqual(true);
-        expect(args[2]).toEqual('foobar');
-
-        args = res.events[1].args;
-
-        expect(Number(args[0])).toEqual(500332);
-        expect(args[1]).toEqual("0x41424344");
-        expect(args[2]).toEqual("0xcafe0123");
+        expect(event2.name).toEqual('Second');
+        expect(event2.data.a).toEqual(500332);
+        expect(event2.data.b).toEqual('ABCD');
+        expect(event2.data.c).toEqual('CAFE0123');
     });
 });

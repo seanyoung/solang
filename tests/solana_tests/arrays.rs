@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::build_solidity;
-use ethabi::{ethereum_types::U256, FixedBytes, Token, Uint};
+use crate::{build_solidity, BorshToken, Pubkey};
+use num_bigint::BigInt;
+use num_traits::{One, Zero};
 
 #[test]
 fn fixed_array() {
@@ -19,20 +20,35 @@ fn fixed_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm.function("get").call().unwrap().unwrap_tuple();
 
     assert_eq!(
         returns,
         vec![
-            Token::FixedArray(vec![
-                Token::Uint(U256::from(1)),
-                Token::Uint(U256::from(102)),
-                Token::Uint(U256::from(300331)),
-                Token::Uint(U256::from(12313231))
+            BorshToken::FixedArray(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(1u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(102u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(300331u32),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(12313231u32),
+                },
             ]),
-            Token::FixedBytes(vec!(0xfe))
+            BorshToken::uint8_fixed_array(vec!(0xfe))
         ]
     );
 
@@ -53,18 +69,45 @@ fn fixed_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm.function("get").call().unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::FixedArray(vec![
-            Token::Tuple(vec![Token::Uint(U256::from(0)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(102)), Token::Bool(true)]),
-            Token::Tuple(vec![Token::Uint(U256::from(0)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(0)), Token::Bool(false)])
-        ])]
+        BorshToken::FixedArray(vec![
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Bool(false)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(102u8),
+                },
+                BorshToken::Bool(true)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Bool(false)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Bool(false)
+            ]),
+        ])
     );
 
     // Now let's try it the other way round; an struct with an array in it
@@ -98,41 +141,73 @@ fn fixed_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm.function("get").call().unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::Bool(true),
-            Token::FixedArray(vec![
-                Token::Uint(U256::from(0)),
-                Token::Uint(U256::from(0)),
-                Token::Uint(U256::from(0)),
-                Token::Uint(U256::from(0)),
+        BorshToken::Tuple(vec![
+            BorshToken::Bool(true),
+            BorshToken::FixedArray(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::zero(),
+                },
             ]),
-            Token::Bool(true)
-        ])],
+            BorshToken::Bool(true)
+        ]),
     );
 
-    let returns = vm.function(
-        "set",
-        &[Token::Tuple(vec![
-            Token::Bool(true),
-            Token::FixedArray(vec![
-                Token::Uint(U256::from(3)),
-                Token::Uint(U256::from(5)),
-                Token::Uint(U256::from(7)),
-                Token::Uint(U256::from(11)),
+    let returns = vm
+        .function("set")
+        .arguments(&[BorshToken::Tuple(vec![
+            BorshToken::Bool(true),
+            BorshToken::FixedArray(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(3u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(5u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(7u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(11u8),
+                },
             ]),
-            Token::Bool(true),
-        ])],
-        &[],
-        None,
-    );
+            BorshToken::Bool(true),
+        ])])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(26))]);
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 32,
+            value: BigInt::from(26u8),
+        }
+    );
 }
 
 #[test]
@@ -163,40 +238,81 @@ fn dynamic_array_fixed_elements() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function(
-        "get",
-        &[
-            Token::Uint(U256::from(12123123)),
-            Token::Array(vec![
-                Token::Uint(U256::from(3)),
-                Token::Uint(U256::from(5)),
-                Token::Uint(U256::from(7)),
-                Token::Uint(U256::from(11)),
+    let returns = vm
+        .function("get")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12123123u32),
+            },
+            BorshToken::Array(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(3u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(5u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(7u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(11u8),
+                },
             ]),
-            Token::Uint(U256::from(102)),
-        ],
-        &[],
-        None,
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 32,
+            value: BigInt::from(26u8),
+        }
     );
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(26))]);
-
     // test that the abi encoder can handle fixed arrays
-    let returns = vm.function("set", &[], &[], None);
+    let returns = vm.function("set").call().unwrap().unwrap_tuple();
 
     assert_eq!(
         returns,
         vec![
-            Token::Uint(U256::from(12123123)),
-            Token::Array(vec![
-                Token::Uint(U256::from(3)),
-                Token::Uint(U256::from(5)),
-                Token::Uint(U256::from(7)),
-                Token::Uint(U256::from(11)),
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12123123u32),
+            },
+            BorshToken::Array(vec![
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(3u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(5u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(7u8),
+                },
+                BorshToken::Uint {
+                    width: 32,
+                    value: BigInt::from(11u8),
+                },
             ]),
-            Token::String(String::from("abcd")),
+            BorshToken::String(String::from("abcd")),
         ]
     );
 }
@@ -232,39 +348,59 @@ fn fixed_array_dynamic_elements() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function(
-        "get",
-        &[
-            Token::Uint(U256::from(12123123)),
-            Token::FixedArray(vec![
-                Token::Bytes(vec![3, 5, 7]),
-                Token::Bytes(vec![11, 13, 17]),
-                Token::Bytes(vec![19, 23]),
-                Token::Bytes(vec![29]),
+    let returns = vm
+        .function("get")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12123123u32),
+            },
+            BorshToken::FixedArray(vec![
+                BorshToken::Bytes(vec![3, 5, 7]),
+                BorshToken::Bytes(vec![11, 13, 17]),
+                BorshToken::Bytes(vec![19, 23]),
+                BorshToken::Bytes(vec![29]),
             ]),
-            Token::Uint(U256::from(102)),
-        ],
-        &[],
-        None,
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 32,
+            value: BigInt::from(127),
+        }
     );
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(127))]);
-
-    let returns = vm.function("set", &[], &[], None);
+    let returns = vm.function("set").call().unwrap().unwrap_tuple();
 
     assert_eq!(
         returns,
         vec![
-            Token::Uint(U256::from(12123123)),
-            Token::FixedArray(vec![
-                Token::Bytes(vec![3, 5, 7]),
-                Token::Bytes(vec![11, 13, 17]),
-                Token::Bytes(vec![19, 23]),
-                Token::Bytes(vec![29]),
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12123123u32)
+            },
+            BorshToken::FixedArray(vec![
+                BorshToken::Bytes(vec![3, 5, 7]),
+                BorshToken::Bytes(vec![11, 13, 17]),
+                BorshToken::Bytes(vec![19, 23]),
+                BorshToken::Bytes(vec![29]),
             ]),
-            Token::Uint(U256::from(102)),
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(102u8)
+            },
         ]
     );
 }
@@ -301,39 +437,56 @@ fn dynamic_array_dynamic_elements() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function(
-        "get",
-        &[
-            Token::Uint(U256::from(12123123)),
-            Token::Array(vec![
-                Token::Bytes(vec![3, 5, 7]),
-                Token::Bytes(vec![11, 13, 17]),
-                Token::Bytes(vec![19, 23]),
-                Token::Bytes(vec![29]),
+    let returns = vm
+        .function("get")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12123123u32),
+            },
+            BorshToken::Array(vec![
+                BorshToken::Bytes(vec![3, 5, 7]),
+                BorshToken::Bytes(vec![11, 13, 17]),
+                BorshToken::Bytes(vec![19, 23]),
+                BorshToken::Bytes(vec![29]),
             ]),
-            Token::Uint(U256::from(102)),
-        ],
-        &[],
-        None,
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(102u8),
+            },
+        ])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 32,
+            value: BigInt::from(127),
+        }
     );
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(127))]);
-
-    let returns = vm.function("set", &[], &[], None);
+    let returns = vm.function("set").call().unwrap().unwrap_tuple();
 
     assert_eq!(
         returns,
         vec![
-            Token::Uint(U256::from(12123123)),
-            Token::Array(vec![
-                Token::Bytes(vec![3, 5, 7]),
-                Token::Bytes(vec![11, 13, 17]),
-                Token::Bytes(vec![19, 23]),
-                Token::Bytes(vec![29]),
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(12123123u32)
+            },
+            BorshToken::Array(vec![
+                BorshToken::Bytes(vec![3, 5, 7]),
+                BorshToken::Bytes(vec![11, 13, 17]),
+                BorshToken::Bytes(vec![19, 23]),
+                BorshToken::Bytes(vec![29]),
             ]),
-            Token::String(String::from("feh")),
+            BorshToken::String(String::from("feh")),
         ]
     );
 }
@@ -367,77 +520,165 @@ fn fixed_array_fixed_elements_storage() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "set_elem",
-        &[Token::Uint(U256::from(2)), Token::Int(U256::from(12123123))],
-        &[],
-        None,
-    );
+    vm.function("set_elem")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(2u8),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(12123123u64),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "set_elem",
-        &[
-            Token::Uint(U256::from(3)),
-            Token::Int(U256::from(123456789)),
-        ],
-        &[],
-        None,
-    );
+    vm.function("set_elem")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(123456789u64),
+            },
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get_elem", &[Token::Uint(U256::from(2))], &[], None);
-
-    assert_eq!(returns, vec![Token::Int(U256::from(12123123)),],);
-
-    let returns = vm.function("get", &[], &[], None);
-
-    assert_eq!(
-        returns,
-        vec![Token::FixedArray(vec![
-            Token::Int(U256::from(0)),
-            Token::Int(U256::from(0)),
-            Token::Int(U256::from(12123123)),
-            Token::Int(U256::from(123456789)),
-        ]),],
-    );
-
-    vm.function(
-        "set",
-        &[Token::FixedArray(vec![
-            Token::Int(U256::from(1)),
-            Token::Int(U256::from(2)),
-            Token::Int(U256::from(3)),
-            Token::Int(U256::from(4)),
-        ])],
-        &[],
-        None,
-    );
-
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm
+        .function("get_elem")
+        .arguments(&[BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(2u8),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::FixedArray(vec![
-            Token::Int(U256::from(1)),
-            Token::Int(U256::from(2)),
-            Token::Int(U256::from(3)),
-            Token::Int(U256::from(4)),
-        ]),],
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(12123123u64)
+        },
     );
 
-    vm.function("del", &[], &[], None);
-
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm
+        .function("get")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::FixedArray(vec![
-            Token::Int(U256::from(0)),
-            Token::Int(U256::from(0)),
-            Token::Int(U256::from(0)),
-            Token::Int(U256::from(0)),
-        ]),],
+        BorshToken::FixedArray(vec![
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::zero()
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::zero()
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(12123123u32),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(123456789u32),
+            },
+        ]),
+    );
+
+    vm.function("set")
+        .arguments(&[BorshToken::FixedArray(vec![
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::one(),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(2u8),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(4u8),
+            },
+        ])])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("get")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::FixedArray(vec![
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::one(),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(2u8),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(4u8),
+            },
+        ]),
+    );
+
+    vm.function("del")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("get")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::FixedArray(vec![
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::zero(),
+            },
+        ]),
     );
 }
 
@@ -470,84 +711,109 @@ fn fixed_array_dynamic_elements_storage() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "set_elem",
-        &[
-            Token::Uint(U256::from(2)),
-            Token::String(String::from("abcd")),
-        ],
-        &[],
-        None,
-    );
+    vm.function("set_elem")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(2u8),
+            },
+            BorshToken::String(String::from("abcd")),
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function(
-        "set_elem",
-        &[
-            Token::Uint(U256::from(3)),
-            Token::String(String::from(
+    vm.function("set_elem")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 256,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::String(String::from(
                 "you can lead a horse to water but you can’t make him drink",
             )),
-        ],
-        &[],
-        None,
-    );
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get_elem", &[Token::Uint(U256::from(2))], &[], None);
+    let returns = vm
+        .function("get_elem")
+        .arguments(&[BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(2u8),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::String(String::from("abcd"))]);
+    assert_eq!(returns, BorshToken::String(String::from("abcd")));
 
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm
+        .function("get")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::FixedArray(vec![
-            Token::String(String::from("")),
-            Token::String(String::from("")),
-            Token::String(String::from("abcd")),
-            Token::String(String::from(
+        BorshToken::FixedArray(vec![
+            BorshToken::String(String::from("")),
+            BorshToken::String(String::from("")),
+            BorshToken::String(String::from("abcd")),
+            BorshToken::String(String::from(
                 "you can lead a horse to water but you can’t make him drink"
             )),
-        ]),],
+        ]),
     );
 
-    vm.function(
-        "set",
-        &[Token::FixedArray(vec![
-            Token::String(String::from("a")),
-            Token::String(String::from("b")),
-            Token::String(String::from("c")),
-            Token::String(String::from("d")),
-        ])],
-        &[],
-        None,
-    );
+    vm.function("set")
+        .arguments(&[BorshToken::FixedArray(vec![
+            BorshToken::String(String::from("a")),
+            BorshToken::String(String::from("b")),
+            BorshToken::String(String::from("c")),
+            BorshToken::String(String::from("d")),
+        ])])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm
+        .function("get")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::FixedArray(vec![
-            Token::String(String::from("a")),
-            Token::String(String::from("b")),
-            Token::String(String::from("c")),
-            Token::String(String::from("d")),
-        ]),],
+        BorshToken::FixedArray(vec![
+            BorshToken::String(String::from("a")),
+            BorshToken::String(String::from("b")),
+            BorshToken::String(String::from("c")),
+            BorshToken::String(String::from("d")),
+        ]),
     );
 
-    vm.function("del", &[], &[], None);
+    vm.function("del")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("get", &[], &[], None);
+    let returns = vm
+        .function("get")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::FixedArray(vec![
-            Token::String(String::from("")),
-            Token::String(String::from("")),
-            Token::String(String::from("")),
-            Token::String(String::from("")),
-        ]),],
+        BorshToken::FixedArray(vec![
+            BorshToken::String(String::from("")),
+            BorshToken::String(String::from("")),
+            BorshToken::String(String::from("")),
+            BorshToken::String(String::from("")),
+        ]),
     );
 }
 
@@ -592,84 +858,242 @@ fn storage_simple_dynamic_array() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("len", &[], &[], None);
-
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
-
-    vm.function("push", &[Token::Int(U256::from(102))], &[], None);
-
-    vm.function("push_zero", &[], &[], None);
-
-    vm.function("push", &[Token::Int(U256::from(12345678901u64))], &[], None);
-
-    let returns = vm.function("subscript", &[Token::Uint(U256::from(0))], &[], None);
-
-    assert_eq!(returns, vec![Token::Int(U256::from(102))]);
-
-    let returns = vm.function("subscript", &[Token::Uint(U256::from(1))], &[], None);
-
-    assert_eq!(returns, vec![Token::Int(U256::from(0))]);
-
-    let returns = vm.function("subscript", &[Token::Uint(U256::from(2))], &[], None);
-
-    assert_eq!(returns, vec![Token::Int(U256::from(12345678901u64))]);
-
-    let returns = vm.function("copy", &[], &[], None);
+    let returns = vm
+        .function("len")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Array(vec![
-            Token::Int(U256::from(102)),
-            Token::Int(U256::from(0)),
-            Token::Int(U256::from(12345678901u64)),
-        ])],
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::zero(),
+        }
     );
 
-    let returns = vm.function("pop", &[], &[], None);
+    vm.function("push")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(102u8),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    assert_eq!(returns, vec![Token::Int(U256::from(12345678901u64))]);
+    vm.function("push_zero")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("len", &[], &[], None);
+    vm.function("push")
+        .arguments(&[BorshToken::Int {
+            width: 64,
+            value: BigInt::from(12345678901u64),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(2))]);
-
-    vm.function(
-        "set",
-        &[Token::Array(vec![
-            Token::Int(U256::from(1)),
-            Token::Int(U256::from(2)),
-            Token::Int(U256::from(3)),
-            Token::Int(U256::from(4)),
-            Token::Int(U256::from(5)),
-            Token::Int(U256::from(6)),
-            Token::Int(U256::from(7)),
-        ])],
-        &[],
-        None,
-    );
-
-    let returns = vm.function("copy", &[], &[], None);
+    let returns = vm
+        .function("subscript")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::zero(),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Array(vec![
-            Token::Int(U256::from(1)),
-            Token::Int(U256::from(2)),
-            Token::Int(U256::from(3)),
-            Token::Int(U256::from(4)),
-            Token::Int(U256::from(5)),
-            Token::Int(U256::from(6)),
-            Token::Int(U256::from(7)),
-        ])],
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(102u8),
+        }
     );
 
-    vm.function("rm", &[], &[], None);
+    let returns = vm
+        .function("subscript")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::one(),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    let returns = vm.function("len", &[], &[], None);
+    assert_eq!(
+        returns,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::zero()
+        }
+    );
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
+    let returns = vm
+        .function("subscript")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::from(2u8),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(12345678901u64),
+        },
+    );
+
+    let returns = vm
+        .function("copy")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Array(vec![
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(102u8),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(12345678901u64),
+            },
+        ]),
+    );
+
+    let returns = vm
+        .function("pop")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Int {
+            width: 64,
+            value: BigInt::from(12345678901u64),
+        },
+    );
+
+    let returns = vm
+        .function("len")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(2u8),
+        }
+    );
+
+    vm.function("set")
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(1u8),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(2u8),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(4u8),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(5u8),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(6u8),
+            },
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(7u8),
+            },
+        ])])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("copy")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Array(vec![
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(1u8)
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(2u8)
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(3u8)
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(4u8)
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(5u8)
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(6u8)
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(7u8)
+            },
+        ]),
+    );
+
+    vm.function("rm")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("len")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::zero(),
+        }
+    );
 }
 
 #[test]
@@ -686,9 +1110,14 @@ fn storage_pop_running_on_empty() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function("pop", &[], &[], None);
+    vm.function("pop")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 }
 
 #[test]
@@ -743,128 +1172,297 @@ fn storage_dynamic_array_of_structs() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("len", &[], &[], None);
-
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
-
-    vm.function(
-        "push1",
-        &[Token::Tuple(vec![
-            Token::Uint(U256::from(13819038012u64)),
-            Token::Bool(true),
-        ])],
-        &[],
-        None,
-    );
-
-    vm.function("push_empty", &[], &[], None);
-
-    vm.function(
-        "push2",
-        &[Token::Tuple(vec![
-            Token::Uint(U256::from(12313123141123213u64)),
-            Token::Bool(true),
-        ])],
-        &[],
-        None,
-    );
-
-    let returns = vm.function("subscript", &[Token::Uint(U256::from(0))], &[], None);
+    let returns = vm
+        .function("len")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::Uint(U256::from(13819038012u64)),
-            Token::Bool(true),
-        ])]
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::zero(),
+        }
     );
 
-    let returns = vm.function("subscript", &[Token::Uint(U256::from(1))], &[], None);
+    vm.function("push1")
+        .arguments(&[BorshToken::Tuple(vec![
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(13819038012u64),
+            },
+            BorshToken::Bool(true),
+        ])])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    vm.function("push_empty")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    vm.function("push2")
+        .arguments(&[BorshToken::Tuple(vec![
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(12313123141123213u64),
+            },
+            BorshToken::Bool(true),
+        ])])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("subscript")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::zero(),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::Uint(U256::from(0)),
-            Token::Bool(false),
-        ])]
+        BorshToken::Tuple(vec![
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(13819038012u64)
+            },
+            BorshToken::Bool(true),
+        ])
     );
 
-    let returns = vm.function("subscript", &[Token::Uint(U256::from(2))], &[], None);
+    let returns = vm
+        .function("subscript")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::one(),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::Uint(U256::from(12313123141123213u64)),
-            Token::Bool(true),
-        ])]
+        BorshToken::Tuple(vec![
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::zero(),
+            },
+            BorshToken::Bool(false),
+        ])
     );
 
-    let returns = vm.function("copy", &[], &[], None);
+    let returns = vm
+        .function("subscript")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::from(2u8),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Array(vec![
-            Token::Tuple(vec![
-                Token::Uint(U256::from(13819038012u64)),
-                Token::Bool(true)
+        BorshToken::Tuple(vec![
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(12313123141123213u64),
+            },
+            BorshToken::Bool(true),
+        ]),
+    );
+
+    let returns = vm
+        .function("copy")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Array(vec![
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(13819038012u64)
+                },
+                BorshToken::Bool(true),
             ]),
-            Token::Tuple(vec![Token::Uint(U256::from(0)), Token::Bool(false)]),
-            Token::Tuple(vec![
-                Token::Uint(U256::from(12313123141123213u64)),
-                Token::Bool(true)
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::zero(),
+                },
+                BorshToken::Bool(false),
             ]),
-        ])]
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(12313123141123213u64),
+                },
+                BorshToken::Bool(true),
+            ]),
+        ])
     );
 
-    let returns = vm.function("pop", &[], &[], None);
+    let returns = vm
+        .function("pop")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Tuple(vec![
-            Token::Uint(U256::from(12313123141123213u64)),
-            Token::Bool(true),
-        ])]
+        BorshToken::Tuple(vec![
+            BorshToken::Uint {
+                width: 64,
+                value: BigInt::from(12313123141123213u64),
+            },
+            BorshToken::Bool(true),
+        ])
     );
 
-    let returns = vm.function("len", &[], &[], None);
-
-    assert_eq!(returns, vec![Token::Uint(U256::from(2))]);
-
-    vm.function(
-        "set",
-        &[Token::Array(vec![
-            Token::Tuple(vec![Token::Uint(U256::from(1)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(2)), Token::Bool(true)]),
-            Token::Tuple(vec![Token::Uint(U256::from(3)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(4)), Token::Bool(true)]),
-            Token::Tuple(vec![Token::Uint(U256::from(5)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(6)), Token::Bool(true)]),
-        ])],
-        &[],
-        None,
-    );
-
-    let returns = vm.function("copy", &[], &[], None);
+    let returns = vm
+        .function("len")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::Array(vec![
-            Token::Tuple(vec![Token::Uint(U256::from(1)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(2)), Token::Bool(true)]),
-            Token::Tuple(vec![Token::Uint(U256::from(3)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(4)), Token::Bool(true)]),
-            Token::Tuple(vec![Token::Uint(U256::from(5)), Token::Bool(false)]),
-            Token::Tuple(vec![Token::Uint(U256::from(6)), Token::Bool(true)]),
-        ])]
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::from(2u8),
+        }
     );
 
-    vm.function("rm", &[], &[], None);
+    vm.function("set")
+        .arguments(&[BorshToken::Array(vec![
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::one(),
+                },
+                BorshToken::Bool(false),
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(2u8),
+                },
+                BorshToken::Bool(true),
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(3u8),
+                },
+                BorshToken::Bool(false),
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(4u8),
+                },
+                BorshToken::Bool(true),
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(5u8),
+                },
+                BorshToken::Bool(false),
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(6u8),
+                },
+                BorshToken::Bool(true),
+            ]),
+        ])])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("len", &[], &[], None);
+    let returns = vm
+        .function("copy")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
-    assert_eq!(returns, vec![Token::Uint(U256::from(0))]);
+    assert_eq!(
+        returns,
+        BorshToken::Array(vec![
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::one(),
+                },
+                BorshToken::Bool(false)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(2u8),
+                },
+                BorshToken::Bool(true)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(3u8),
+                },
+                BorshToken::Bool(false)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(4u8),
+                },
+                BorshToken::Bool(true)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(5u8),
+                },
+                BorshToken::Bool(false)
+            ]),
+            BorshToken::Tuple(vec![
+                BorshToken::Uint {
+                    width: 64,
+                    value: BigInt::from(6u8),
+                },
+                BorshToken::Bool(true)
+            ]),
+        ]),
+    );
+
+    vm.function("rm")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("len")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::Uint {
+            width: 256,
+            value: BigInt::zero(),
+        }
+    );
 }
 
 #[test]
@@ -881,17 +1479,33 @@ fn array_literal() {
         }"#,
     );
 
-    vm.constructor("foo", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let returns = vm.function("list", &[], &[], None);
+    let returns = vm
+        .function("list")
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
 
     assert_eq!(
         returns,
-        vec![Token::FixedArray(vec![
-            Token::Int(U256::from(1)),
-            Token::Int(U256::from(2)),
-            Token::Int(U256::from(3))
-        ])]
+        BorshToken::FixedArray(vec![
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::one(),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(2u8),
+            },
+            BorshToken::Int {
+                width: 64,
+                value: BigInt::from(3u8),
+            },
+        ])
     );
 }
 
@@ -948,19 +1562,40 @@ fn storage_pop_push() {
     }"#,
     );
 
-    vm.constructor("Testing", &[]);
-    vm.function("fn1", &[], &[], None);
-    vm.function("fn2", &[], &[], None);
-    vm.function("fn3", &[], &[], None);
-    vm.function("fn4", &[], &[], None);
-    vm.function("fn5", &[], &[], None);
-    vm.function("fn6", &[], &[], None);
-    vm.function("fn7", &[], &[], None);
-    vm.function("fn8", &[], &[], None);
-    vm.function("clear", &[], &[], None);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn1")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn2")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn3")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn4")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn5")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn6")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn7")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("fn8")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+    vm.function("clear")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
     // make sure every thing has been freed
-    assert_eq!(vm.validate_account_data_heap(), 0);
+    assert_eq!(vm.validate_account_data_heap(&Pubkey(data_account)), 0);
 }
 
 #[test]
@@ -987,40 +1622,611 @@ fn initialization_with_literal() {
         "#,
     );
 
-    vm.constructor("Testing", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    let mut addr1: Vec<u8> = Vec::new();
-    addr1.resize(32, 0);
+    let mut addr1: Vec<u8> = vec![0; 32];
     addr1[0] = 1;
-    let mut addr2: Vec<u8> = Vec::new();
-    addr2.resize(32, 0);
+    let mut addr2: Vec<u8> = vec![0; 32];
     addr2[0] = 2;
-    let _ = vm.function(
-        "split",
-        &[
-            Token::FixedBytes(FixedBytes::from(&addr1[..])),
-            Token::FixedBytes(FixedBytes::from(&addr2[..])),
-        ],
-        &[],
-        None,
-    );
-    let returns = vm.function("getIdx", &[Token::Uint(Uint::from(0))], &[], None);
-    let returned_addr1 = returns[0].clone().into_fixed_bytes().unwrap();
+    let _ = vm
+        .function("split")
+        .arguments(&[
+            BorshToken::FixedBytes(addr1[..].to_vec()),
+            BorshToken::FixedBytes(addr2[..].to_vec()),
+        ])
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let returns = vm
+        .function("getIdx")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::zero(),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+    let returned_addr1 = returns.into_fixed_bytes().unwrap();
     assert_eq!(addr1, returned_addr1);
 
-    let returns = vm.function("getIdx", &[Token::Uint(Uint::from(1))], &[], None);
-    let returned_addr2 = returns[0].clone().into_fixed_bytes().unwrap();
+    let returns = vm
+        .function("getIdx")
+        .arguments(&[BorshToken::Uint {
+            width: 32,
+            value: BigInt::one(),
+        }])
+        .accounts(vec![("dataAccount", data_account)])
+        .call()
+        .unwrap();
+    let returned_addr2 = returns.into_fixed_bytes().unwrap();
     assert_eq!(addr2, returned_addr2);
 
-    let returns = vm.function(
-        "getVec",
-        &[Token::Uint(Uint::from(563)), Token::Uint(Uint::from(895))],
-        &[],
-        None,
-    );
-    let array = returns[0].clone().into_array().unwrap();
+    let returns = vm
+        .function("getVec")
+        .arguments(&[
+            BorshToken::Uint {
+                width: 32,
+                value: BigInt::from(563u16),
+            },
+            BorshToken::Uint {
+                width: 32,
+                value: BigInt::from(895u16),
+            },
+        ])
+        .call()
+        .unwrap();
+    let array = returns.into_array().unwrap();
     assert_eq!(
         array,
-        vec![Token::Uint(Uint::from(563)), Token::Uint(Uint::from(895))]
+        vec![
+            BorshToken::Uint {
+                width: 32,
+                value: BigInt::from(563u16),
+            },
+            BorshToken::Uint {
+                width: 32,
+                value: BigInt::from(895u16),
+            },
+        ]
+    );
+}
+
+#[test]
+fn dynamic_array_push() {
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            function test() public {
+                int[] bar = (new int[])(1);
+
+                bar[0] = 128;
+                bar.push(64);
+
+                assert(bar.length == 2);
+                assert(bar[1] == 64);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            function test() public {
+                bytes bar = (new bytes)(1);
+
+                bar[0] = 128;
+                bar.push(64);
+
+                assert(bar.length == 2);
+                assert(bar[1] == 64);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            struct s {
+                int32 f1;
+                bool f2;
+            }
+            function test() public {
+                s[] bar = new s[](1);
+
+                bar[0] = s({f1: 0, f2: false});
+                bar.push(s({f1: 1, f2: true}));
+
+                assert(bar.length == 2);
+                assert(bar[1].f1 == 1);
+                assert(bar[1].f2 == true);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            enum enum1 { val1, val2, val3 }
+            function test() public {
+                enum1[] bar = new enum1[](1);
+
+                bar[0] = enum1.val1;
+                bar.push(enum1.val2);
+
+                assert(bar.length == 2);
+                assert(bar[1] == enum1.val2);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    // push() returns a reference to the thing
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            struct s {
+                int32 f1;
+                bool f2;
+            }
+
+            function test() public {
+                s[] bar = new s[](0);
+                s memory n = bar.push();
+                n.f1 = 102;
+                n.f2 = true;
+
+                assert(bar[0].f1 == 102);
+                assert(bar[0].f2 == true);
+            }
+        }"#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+}
+
+#[test]
+fn dynamic_array_pop() {
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            function test() public {
+                int[] bar = new int[](1);
+
+                bar[0] = 128;
+
+                assert(bar.length == 1);
+                assert(128 == bar.pop());
+                assert(bar.length == 0);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            function test() public {
+                bytes bar = new bytes(1);
+
+                bar[0] = 128;
+
+                assert(bar.length == 1);
+                assert(128 == bar.pop());
+                assert(bar.length == 0);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            struct s {
+                int32 f1;
+                bool f2;
+            }
+            function test() public {
+                s[] bar = new s[](1);
+
+                bar[0] = s(128, true);
+
+                assert(bar.length == 1);
+
+                s baz = bar.pop();
+                assert(baz.f1 == 128);
+                assert(baz.f2 == true);
+                assert(bar.length == 0);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            enum enum1 { val1, val2, val3 }
+            function test() public {
+                enum1[] bar = new enum1[](1);
+
+                bar[0] = enum1.val2;
+
+                assert(bar.length == 1);
+                assert(enum1.val2 == bar.pop());
+                assert(bar.length == 0);
+            }
+        }
+        "#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+}
+
+#[test]
+#[should_panic]
+fn dynamic_array_pop_empty_array() {
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            function test() public returns (int) {
+                int[] bar = new int[](0);
+                return bar.pop();
+            }
+        }"#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime
+        .function("test")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+}
+
+#[test]
+#[should_panic]
+fn dynamic_array_pop_bounds() {
+    let mut runtime = build_solidity(
+        r#"
+        pragma solidity 0;
+
+        contract foo {
+            function test() public {
+                int[] bar = new int[](1);
+                bar[0] = 12;
+                bar.pop();
+
+                assert(bar[0] == 12);
+            }
+        }"#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime
+        .function("test")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+}
+
+#[test]
+fn dynamic_array_push_pop_loop() {
+    let mut runtime = build_solidity(
+        r#"
+        contract foo {
+            function test() public {
+                uint32[] bar1 = new uint32[](0);
+                uint32[] bar2 = new uint32[](0);
+
+                // each time we call a system call, the heap is checked
+                // for consistency. So do a print() after each operation
+                for (uint64 i = 1; i < 160; i++) {
+                    if ((i % 10) == 0) {
+                        bar1.pop();
+                        print("bar1.pop");
+                        bar2.pop();
+                        print("bar2.pop");
+                    } else {
+                        uint32 v = bar1.length;
+                        bar1.push(v);
+                        print("bar1.push");
+                        bar2.push(v);
+                        print("bar2.push");
+                    }
+                }
+
+                assert(bar1.length == bar2.length);
+
+                for (uint32 i = 0; i < bar1.length; i++) {
+                    assert(bar1[i] == i);
+                    assert(bar2[i] == i);
+                }
+            }
+        }"#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+
+    let mut runtime = build_solidity(
+        r#"
+        contract foo {
+            function test() public {
+                bytes bar1 = new bytes(0);
+                bytes bar2 = new bytes(0);
+
+                // each time we call a system call, the heap is checked
+                // for consistency. So do a print() after each operation
+                for (uint64 i = 1; i < 160; i++) {
+                    if ((i % 10) == 0) {
+                        bar1.pop();
+                        print("bar1.pop");
+                        bar2.pop();
+                        print("bar2.pop");
+                    } else {
+                        uint8 v = uint8(bar1.length);
+                        bar1.push(v);
+                        print("bar1.push");
+                        bar2.push(v);
+                        print("bar2.push");
+                    }
+                }
+
+                assert(bar1.length == bar2.length);
+
+                for (uint32 i = 0; i < bar1.length; i++) {
+                    uint8 v = uint8(i);
+                    print("{}.{}.{}".format(v, bar1[i], bar2[i]));
+                    assert(bar1[i] == v);
+                    assert(bar2[i] == v);
+                }
+            }
+        }"#,
+    );
+
+    let data_account = runtime.initialize_data_account();
+    runtime
+        .function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    runtime.function("test").call();
+}
+
+#[test]
+fn double_index() {
+    let src = r#"
+contract RH {
+
+  function calc(uint256[] memory separators, int256[] memory params) public pure returns (int256[4] memory) {
+    int256 stopLimit = params[separators[4]];
+    int256 contractedValueRatio = params[separators[6]];
+
+    return [stopLimit, contractedValueRatio, 3, 4];
+  }
+
+}
+    "#;
+
+    let mut vm = build_solidity(src);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let separators = BorshToken::Array(vec![
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(25u8),
+        },
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(25u8),
+        },
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(25u8),
+        },
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(25u8),
+        },
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(1u8),
+        },
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(25u8),
+        },
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(0u8),
+        },
+    ]);
+
+    let params = BorshToken::Array(vec![
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(80u8),
+        },
+        BorshToken::Int {
+            width: 256,
+            value: BigInt::from(98u8),
+        },
+    ]);
+
+    let returns = vm
+        .function("calc")
+        .arguments(&[separators, params])
+        .call()
+        .unwrap();
+
+    assert_eq!(
+        returns,
+        BorshToken::FixedArray(vec![
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(98u8),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(80u8),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(3u8),
+            },
+            BorshToken::Int {
+                width: 256,
+                value: BigInt::from(4u8),
+            },
+        ])
+    );
+}
+
+#[test]
+fn push_empty_array() {
+    let src = r#"
+contract MyTest {
+    function foo() public pure returns (bytes memory) {
+        bytes b1 = hex"41";
+        bytes b2 = hex"41";
+
+        b2.push(0x41);
+
+        return (b1);
+    }
+
+    function foo2() public pure returns (uint64) {
+        uint64[] a;
+        a.push(20);
+        return a[0];
+    }
+}
+    "#;
+
+    let mut vm = build_solidity(src);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
+
+    let ret = vm.function("foo").call().unwrap();
+    assert_eq!(ret, BorshToken::Bytes(vec![65]));
+
+    let ret = vm.function("foo2").call().unwrap();
+    assert_eq!(
+        ret,
+        BorshToken::Uint {
+            width: 64,
+            value: BigInt::from(20),
+        }
     );
 }

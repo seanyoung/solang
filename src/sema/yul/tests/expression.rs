@@ -23,16 +23,9 @@ use std::sync::Arc;
 
 #[test]
 fn resolve_bool_literal() {
-    let ctx = ExprContext {
-        file_no: 0,
-        contract_no: None,
-        function_no: None,
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut ctx = ExprContext::default();
+    ctx.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
 
     let mut ns = Namespace::new(Target::Solana);
@@ -46,7 +39,7 @@ fn resolve_bool_literal() {
     );
 
     let resolved_type =
-        resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(resolved_type.is_ok());
     assert!(ns.diagnostics.is_empty());
     let unwrapped = resolved_type.unwrap();
@@ -58,7 +51,7 @@ fn resolve_bool_literal() {
 
     let expr = pt::YulExpression::BoolLiteral(Loc::File(0, 3, 5), true, None);
     let resolved_type =
-        resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
 
     assert!(resolved_type.is_ok());
     assert!(ns.diagnostics.is_empty());
@@ -71,16 +64,9 @@ fn resolve_bool_literal() {
 
 #[test]
 fn resolve_number_literal() {
-    let ctx = ExprContext {
-        file_no: 0,
-        contract_no: None,
-        function_no: None,
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut ctx = ExprContext::default();
+    ctx.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
 
     let loc = Loc::File(0, 3, 5);
@@ -94,7 +80,8 @@ fn resolve_number_literal() {
             name: "u64".to_string(),
         }),
     );
-    let parsed = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let parsed =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(parsed.is_ok());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -112,7 +99,8 @@ fn resolve_number_literal() {
             name: "u128".to_string(),
         }),
     );
-    let parsed = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let parsed =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(parsed.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -122,7 +110,8 @@ fn resolve_number_literal() {
 
     ns.diagnostics = Diagnostics::default();
     let expr = pt::YulExpression::NumberLiteral(loc, "20".to_string(), "".to_string(), None);
-    let parsed = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let parsed =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(parsed.is_ok());
     assert!(ns.diagnostics.is_empty());
     assert_eq!(
@@ -133,19 +122,12 @@ fn resolve_number_literal() {
 
 #[test]
 fn resolve_hex_number_literal() {
-    let ctx = ExprContext {
-        file_no: 0,
-        contract_no: None,
-        function_no: None,
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut ctx = ExprContext::default();
+    ctx.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
 
-    let mut ns = Namespace::new(Target::Ewasm);
+    let mut ns = Namespace::new(Target::EVM);
     let loc = Loc::File(0, 3, 5);
     let expr = pt::YulExpression::HexNumberLiteral(
         loc,
@@ -156,7 +138,8 @@ fn resolve_hex_number_literal() {
         }),
     );
 
-    let resolved = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let resolved =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(resolved.is_ok());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -173,7 +156,8 @@ fn resolve_hex_number_literal() {
             name: "s64".to_string(),
         }),
     );
-    let resolved = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let resolved =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(resolved.is_ok());
     assert!(ns.diagnostics.is_empty());
     assert_eq!(
@@ -184,19 +168,12 @@ fn resolve_hex_number_literal() {
 
 #[test]
 fn resolve_hex_string_literal() {
-    let ctx = ExprContext {
-        file_no: 0,
-        contract_no: None,
-        function_no: None,
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut ctx = ExprContext::default();
+    ctx.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
 
-    let mut ns = Namespace::new(Target::Ewasm);
+    let mut ns = Namespace::new(Target::EVM);
     let loc = Loc::File(0, 3, 5);
     let expr = pt::YulExpression::HexStringLiteral(
         HexLiteral {
@@ -206,7 +183,8 @@ fn resolve_hex_string_literal() {
         None,
     );
 
-    let resolved = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let resolved =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(resolved.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -225,7 +203,8 @@ fn resolve_hex_string_literal() {
             name: "myType".to_string(),
         }),
     );
-    let resolved = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let resolved =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(resolved.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -244,7 +223,8 @@ fn resolve_hex_string_literal() {
             name: "u256".to_string(),
         }),
     );
-    let resolved = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let resolved =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(resolved.is_ok());
     assert!(ns.diagnostics.is_empty());
     assert_eq!(
@@ -255,16 +235,9 @@ fn resolve_hex_string_literal() {
 
 #[test]
 fn resolve_string_literal() {
-    let ctx = ExprContext {
-        file_no: 0,
-        contract_no: None,
-        function_no: None,
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut ctx = ExprContext::default();
+    ctx.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
 
     let mut ns = Namespace::new(Target::Solana);
@@ -273,7 +246,7 @@ fn resolve_string_literal() {
         StringLiteral {
             loc,
             unicode: false,
-            string: r#"ab\xffa\u00e0g"#.to_string(),
+            string: r"ab\xffa\u00e0g".to_string(),
         },
         Some(Identifier {
             loc,
@@ -281,7 +254,8 @@ fn resolve_string_literal() {
         }),
     );
 
-    let resolved = resolve_yul_expression(&expr, &ctx, &mut symtable, &mut function_table, &mut ns);
+    let resolved =
+        resolve_yul_expression(&expr, &mut ctx, &mut symtable, &mut function_table, &mut ns);
     assert!(resolved.is_ok());
     assert!(ns.diagnostics.is_empty());
     assert_eq!(
@@ -292,18 +266,11 @@ fn resolve_string_literal() {
 
 #[test]
 fn resolve_variable_local() {
-    let context = ExprContext {
-        file_no: 0,
-        contract_no: Some(0),
-        function_no: Some(0),
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut context = ExprContext::default();
+    context.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
-    let mut ns = Namespace::new(Target::Ewasm);
+    let mut ns = Namespace::new(Target::EVM);
     let loc = Loc::File(1, 2, 3);
 
     let pos1 = symtable
@@ -317,6 +284,7 @@ fn resolve_variable_local() {
             VariableInitializer::Yul(false),
             VariableUsage::YulLocalVariable,
             None,
+            &mut context,
         )
         .unwrap();
     let pos2 = symtable
@@ -330,6 +298,7 @@ fn resolve_variable_local() {
             VariableInitializer::Yul(false),
             VariableUsage::LocalVariable,
             None,
+            &mut context,
         )
         .unwrap();
 
@@ -347,14 +316,14 @@ fn resolve_variable_local() {
 
     let res1 = resolve_yul_expression(
         &expr1,
-        &context,
+        &mut context,
         &mut symtable,
         &mut function_table,
         &mut ns,
     );
     let res2 = resolve_yul_expression(
         &expr2,
-        &context,
+        &mut context,
         &mut symtable,
         &mut function_table,
         &mut ns,
@@ -370,20 +339,26 @@ fn resolve_variable_local() {
 
 #[test]
 fn resolve_variable_contract() {
-    let context = ExprContext {
-        file_no: 0,
+    let mut context = ExprContext {
         contract_no: Some(0),
         function_no: Some(0),
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
+        ..Default::default()
     };
-    let mut symtable = Symtable::new();
+    context.enter_scope();
+
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
-    let mut ns = Namespace::new(Target::Ewasm);
+    let mut ns = Namespace::new(Target::EVM);
     let loc = Loc::File(0, 2, 3);
-    let mut contract = ast::Contract::new("test", ContractTy::Contract(loc), vec![], loc);
+    let mut contract = ast::Contract::new(
+        &pt::Identifier {
+            name: "test".to_string(),
+            loc: pt::Loc::Codegen,
+        },
+        ContractTy::Contract(loc),
+        vec![],
+        loc,
+    );
     contract.variables.push(Variable {
         tags: vec![],
         name: "var1".to_string(),
@@ -395,6 +370,7 @@ fn resolve_variable_contract() {
         initializer: None,
         assigned: false,
         read: false,
+        storage_type: None,
     });
     contract.variables.push(Variable {
         tags: vec![],
@@ -407,6 +383,7 @@ fn resolve_variable_contract() {
         initializer: None,
         assigned: false,
         read: false,
+        storage_type: None,
     });
 
     contract.variables.push(Variable {
@@ -420,6 +397,7 @@ fn resolve_variable_contract() {
         initializer: None,
         assigned: false,
         read: false,
+        storage_type: None,
     });
 
     ns.contracts.push(contract);
@@ -435,6 +413,7 @@ fn resolve_variable_contract() {
         initializer: None,
         assigned: false,
         read: false,
+        storage_type: None,
     });
 
     ns.variable_symbols.insert(
@@ -460,7 +439,13 @@ fn resolve_variable_contract() {
         loc,
         name: "var1".to_string(),
     });
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_ok());
     assert_eq!(
         YulExpression::ConstantVariable(loc, Type::Bool, Some(0), 0),
@@ -471,7 +456,13 @@ fn resolve_variable_contract() {
         loc,
         name: "var2".to_string(),
     });
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_ok());
     assert_eq!(
         YulExpression::StorageVariable(loc, Type::Int(128), 0, 1),
@@ -482,7 +473,13 @@ fn resolve_variable_contract() {
         loc,
         name: "var3".to_string(),
     });
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_ok());
     assert_eq!(
         YulExpression::ConstantVariable(loc, Type::Uint(32), None, 0),
@@ -493,7 +490,13 @@ fn resolve_variable_contract() {
         loc,
         name: "func".to_string(),
     });
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -506,7 +509,13 @@ fn resolve_variable_contract() {
         loc,
         name: "none".to_string(),
     });
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -519,7 +528,13 @@ fn resolve_variable_contract() {
         loc,
         name: "imut".to_string(),
     });
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -530,19 +545,12 @@ fn resolve_variable_contract() {
 
 #[test]
 fn function_call() {
-    let context = ExprContext {
-        file_no: 0,
-        contract_no: Some(0),
-        function_no: Some(0),
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut context = ExprContext::default();
+    context.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
-    function_table.new_scope();
-    let mut ns = Namespace::new(Target::Ewasm);
+    function_table.enter_scope();
+    let mut ns = Namespace::new(Target::EVM);
     let loc = Loc::File(0, 2, 3);
 
     let expr = pt::YulExpression::FunctionCall(Box::new(YulFunctionCall {
@@ -553,7 +561,13 @@ fn function_call() {
         },
         arguments: vec![],
     }));
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -570,7 +584,13 @@ fn function_call() {
         },
         arguments: vec![],
     }));
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -596,7 +616,13 @@ fn function_call() {
         },
         arguments: vec![arg.clone()],
     }));
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -613,7 +639,13 @@ fn function_call() {
         },
         arguments: vec![arg.clone()],
     }));
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_ok());
     assert_eq!(
         YulExpression::BuiltInCall(
@@ -621,7 +653,7 @@ fn function_call() {
             YulBuiltInFunction::Not,
             vec![resolve_yul_expression(
                 &arg,
-                &context,
+                &mut context,
                 &mut symtable,
                 &mut function_table,
                 &mut ns
@@ -648,7 +680,13 @@ fn function_call() {
         },
         arguments: vec![arg.clone()],
     }));
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -665,7 +703,13 @@ fn function_call() {
         },
         arguments: vec![],
     }));
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_ok());
     assert_eq!(
         YulExpression::FunctionCall(loc, 0, vec![], Arc::new(vec![])),
@@ -680,7 +724,13 @@ fn function_call() {
         },
         arguments: vec![],
     }));
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -691,19 +741,12 @@ fn function_call() {
 
 #[test]
 fn check_arguments() {
-    let context = ExprContext {
-        file_no: 0,
-        contract_no: Some(0),
-        function_no: Some(0),
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
-    let mut symtable = Symtable::new();
+    let mut context = ExprContext::default();
+    context.enter_scope();
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
-    function_table.new_scope();
-    let mut ns = Namespace::new(Target::Ewasm);
+    function_table.enter_scope();
+    let mut ns = Namespace::new(Target::EVM);
     let loc = Loc::File(0, 2, 3);
 
     function_table.add_function_header(
@@ -732,7 +775,9 @@ fn check_arguments() {
                 ty_loc: None,
                 indexed: false,
                 readonly: false,
+                infinite_size: false,
                 recursive: false,
+                annotation: None,
             },
             Parameter {
                 loc,
@@ -744,7 +789,9 @@ fn check_arguments() {
                 ty_loc: None,
                 indexed: false,
                 readonly: false,
+                infinite_size: false,
                 recursive: false,
+                annotation: None,
             },
         ],
     );
@@ -770,11 +817,17 @@ fn check_arguments() {
         }))],
     }));
 
-    let _ = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let _ = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(!ns.diagnostics.is_empty());
     assert_eq!(
         ns.diagnostics.iter().next().unwrap().message,
-        "builtin 'pop' is not available for target ewasm. Please, open a GitHub issue at https://github.com/hyperledger-labs/solang/issues if there is need to support this function"
+        "builtin function 'pop' returns nothing"
     );
     ns.diagnostics = Diagnostics::default();
 
@@ -794,7 +847,13 @@ fn check_arguments() {
         }))],
     }));
 
-    let _ = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let _ = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(!ns.diagnostics.is_empty());
     assert_eq!(
         ns.diagnostics.iter().next().unwrap().message,
@@ -818,7 +877,13 @@ fn check_arguments() {
         }))],
     }));
 
-    let _ = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let _ = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(!ns.diagnostics.is_empty());
     assert_eq!(
         ns.diagnostics.iter().next().unwrap().message,
@@ -828,21 +893,27 @@ fn check_arguments() {
 
 #[test]
 fn test_member_access() {
-    let context = ExprContext {
-        file_no: 0,
+    let mut context = ExprContext {
         contract_no: Some(0),
         function_no: Some(0),
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
+        ..Default::default()
     };
-    let mut symtable = Symtable::new();
+    context.enter_scope();
+
+    let mut symtable = Symtable::default();
     let mut function_table = FunctionsTable::new(0);
-    let mut ns = Namespace::new(Target::Ewasm);
+    let mut ns = Namespace::new(Target::EVM);
     let loc = Loc::File(0, 2, 3);
 
-    let mut contract = ast::Contract::new("test", ContractTy::Contract(loc), vec![], loc);
+    let mut contract = ast::Contract::new(
+        &pt::Identifier {
+            name: "test".into(),
+            loc: pt::Loc::Builtin,
+        },
+        ContractTy::Contract(loc),
+        vec![],
+        loc,
+    );
     contract.variables.push(Variable {
         tags: vec![],
         name: "var1".to_string(),
@@ -854,6 +925,7 @@ fn test_member_access() {
         initializer: None,
         assigned: false,
         read: false,
+        storage_type: None,
     });
 
     ns.contracts.push(contract);
@@ -872,7 +944,13 @@ fn test_member_access() {
         },
     );
 
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -890,7 +968,13 @@ fn test_member_access() {
         },
     );
 
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_err());
     assert_eq!(ns.diagnostics.len(), 1);
     assert_eq!(
@@ -911,7 +995,13 @@ fn test_member_access() {
         },
     );
 
-    let res = resolve_yul_expression(&expr, &context, &mut symtable, &mut function_table, &mut ns);
+    let res = resolve_yul_expression(
+        &expr,
+        &mut context,
+        &mut symtable,
+        &mut function_table,
+        &mut ns,
+    );
     assert!(res.is_ok());
     assert!(ns.diagnostics.is_empty());
     assert_eq!(
@@ -934,18 +1024,19 @@ fn test_check_types() {
         0,
     );
 
-    let context = ExprContext {
-        file_no: 0,
-        contract_no: Some(0),
-        function_no: Some(0),
-        unchecked: false,
-        constant: false,
-        lvalue: false,
-        yul_function: false,
-    };
+    let mut context = ExprContext::default();
+    context.enter_scope();
 
-    let mut ns = Namespace::new(Target::Ewasm);
-    let mut contract = ast::Contract::new("test", ContractTy::Contract(loc), vec![], loc);
+    let mut ns = Namespace::new(Target::EVM);
+    let mut contract = ast::Contract::new(
+        &pt::Identifier {
+            name: "test".into(),
+            loc: pt::Loc::Builtin,
+        },
+        ContractTy::Contract(loc),
+        vec![],
+        loc,
+    );
     contract.variables.push(Variable {
         tags: vec![],
         name: "var1".to_string(),
@@ -957,9 +1048,10 @@ fn test_check_types() {
         initializer: None,
         assigned: false,
         read: false,
+        storage_type: None,
     });
     ns.contracts.push(contract);
-    let mut symtable = Symtable::new();
+    let mut symtable = Symtable::default();
     symtable.add(
         &Identifier {
             loc,
@@ -970,8 +1062,9 @@ fn test_check_types() {
         VariableInitializer::Solidity(None),
         VariableUsage::YulLocalVariable,
         None,
+        &mut context,
     );
-    let res = check_type(&expr, &context, &mut ns, &mut symtable);
+    let res = check_type(&expr, &mut context, &mut ns, &mut symtable);
     assert!(res.is_some());
     assert_eq!(
         res.unwrap().message,
@@ -979,7 +1072,7 @@ fn test_check_types() {
     );
 
     let expr = YulExpression::StorageVariable(loc, Type::Int(16), 0, 0);
-    let res = check_type(&expr, &context, &mut ns, &mut symtable);
+    let res = check_type(&expr, &mut context, &mut ns, &mut symtable);
     assert!(res.is_some());
     assert_eq!(
         res.unwrap().message,
@@ -992,12 +1085,12 @@ fn test_check_types() {
         Some(StorageLocation::Calldata(loc)),
         0,
     );
-    let res = check_type(&expr, &context, &mut ns, &mut symtable);
+    let res = check_type(&expr, &mut context, &mut ns, &mut symtable);
     assert!(res.is_some());
     assert_eq!(res.unwrap().message, "Calldata arrays must be accessed with '.offset', '.length' and the 'calldatacopy' function");
 
     let expr = YulExpression::StringLiteral(loc, vec![0, 255, 20], Type::Uint(256));
-    let res = check_type(&expr, &context, &mut ns, &mut symtable);
+    let res = check_type(&expr, &mut context, &mut ns, &mut symtable);
     assert!(res.is_none());
 }
 
@@ -1039,7 +1132,7 @@ contract testTypes {
     let ns = parse(file);
     assert!(ns
         .diagnostics
-        .contains_message("assignment to length is not implemented. If there is need for this feature, please file a Github issue at https://github.com/hyperledger-labs/solang/issues"));
+        .contains_message("assignment to length is not implemented. If there is need for this feature, please file a Github issue at https://github.com/hyperledger-solang/solang/issues"));
 
     let file = r#"
 contract testTypes {
@@ -1057,7 +1150,7 @@ contract testTypes {
 
     let ns = parse(file);
     assert!(ns.diagnostics.contains_message(
-        r#"unrecognised token ':=', expected ")", ",", "address", "bool", "break", "byte", "case", "continue", "default", "for", "function", "if", "leave", "let", "return", "revert", "switch", "{", "}", identifier"#
+        r#"unrecognised token ':=', expected "abstract", "address", "anonymous", "as", "assembly", "bool", "break", "byte", "bytes", "calldata", "catch", "constant", "constructor", "continue", "contract", "do", "else", "emit", "enum", "event", "external", "fallback", "for", "function", "if", "immutable", "import", "indexed", "interface", "internal", "is", "leave", "let", "library", "mapping", "memory", "modifier", "new", "override", "payable", "pragma", "private", "public", "pure", "receive", "return", "returns", "revert", "storage", "string", "struct", "switch", "throw", "try", "unchecked", "using", "view", "virtual", "while", "{", "}", Int, Uint, identifier"#
     ));
 
     let file = r#"
@@ -1112,7 +1205,7 @@ contract testTypes {
     }
 
     test tt1;
-    function testAsm(uint[] calldata vl) public pure {
+    function testAsm(uint[] calldata vl) public view {
         test storage tt2 = tt1;
         assembly {
             {
@@ -1130,7 +1223,7 @@ contract testTypes {
         .contains_message("found contract 'testTypes'"));
     assert!(ns
         .diagnostics
-        .contains_message("function parameter 'vl' has never been read"));
+        .contains_message("function parameter 'vl' is unused"));
 
     let file = r#"
     contract testTypes {
@@ -1580,12 +1673,12 @@ contract foo {
     }
 }
     "#;
-    let mut cache = FileResolver::new();
+    let mut cache = FileResolver::default();
     cache.set_file_contents("test.sol", file.to_string());
 
     let ns = parse_and_resolve(OsStr::new("test.sol"), &mut cache, Target::Solana);
 
-    assert!(ns.diagnostics.contains_message("builtin 'gaslimit' is not available for target solana. Please, open a GitHub issue at https://github.com/hyperledger-labs/solang/issues if there is need to support this function"));
+    assert!(ns.diagnostics.contains_message("builtin 'gaslimit' is not available for target Solana. Please, open a GitHub issue at https://github.com/hyperledger-solang/solang/issues if there is need to support this function"));
 
     let file = r#"
 contract foo {
@@ -1597,19 +1690,19 @@ contract foo {
 }
     "#;
 
-    let mut cache = FileResolver::new();
+    let mut cache = FileResolver::default();
     cache.set_file_contents("test.sol", file.to_string());
 
     let ns = parse_and_resolve(
         OsStr::new("test.sol"),
         &mut cache,
-        Target::Substrate {
+        Target::Polkadot {
             address_length: 32,
             value_length: 16,
         },
     );
 
-    assert!(ns.diagnostics.contains_message("builtin 'coinbase' is not available for target substrate. Please, open a GitHub issue at https://github.com/hyperledger-labs/solang/issues if there is need to support this function"));
+    assert!(ns.diagnostics.contains_message("builtin 'coinbase' is not available for target Polkadot. Please, open a GitHub issue at https://github.com/hyperledger-solang/solang/issues if there is need to support this function"));
 
     let file = r#"
     contract foo {
@@ -1621,10 +1714,10 @@ contract foo {
 }
     "#;
 
-    let mut cache = FileResolver::new();
+    let mut cache = FileResolver::default();
     cache.set_file_contents("test.sol", file.to_string());
 
-    let ns = parse_and_resolve(OsStr::new("test.sol"), &mut cache, Target::Ewasm);
+    let ns = parse_and_resolve(OsStr::new("test.sol"), &mut cache, Target::Solana);
 
-    assert!(ns.diagnostics.contains_message("builtin 'log0' is not available for target ewasm. Please, open a GitHub issue at https://github.com/hyperledger-labs/solang/issues if there is need to support this function"));
+    assert!(ns.diagnostics.contains_message("builtin 'log0' is not available for target Solana. Please, open a GitHub issue at https://github.com/hyperledger-solang/solang/issues if there is need to support this function"));
 }

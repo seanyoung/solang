@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+#
 # Configuration file for the Sphinx documentation builder.
 #
 # This file only contains a selection of the most common options. For a full
@@ -24,10 +26,11 @@ def setup(sphinx):
 # -- Project information -----------------------------------------------------
 
 project = 'Solang Solidity Compiler'
-copyright = '2019 - 2021 Sean Young <sean@mess.org>'
-author = 'Sean Young <sean@mess.org>'
+copyright = '2019 - 2023 Solang Maintainers'
+author = 'Sean Young <sean@mess.org>, Cyrill Leutwiler <bigcyrill@hotmail.com>, Lucas Steuernagel <lucas.tnagel@gmail.com>'
 
 # The full version, including alpha/beta/rc tags
+version = os.popen('git describe --tags --abbrev=0').readline().strip()
 release = os.popen('git describe --tags').readline().strip()
 
 # -- General configuration ---------------------------------------------------
@@ -36,8 +39,11 @@ release = os.popen('git describe --tags').readline().strip()
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'sphinx_tabs.tabs'
 ]
 
+# Do not allow tabs to be closed
+sphinx_tabs_disable_tab_closing = True
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 

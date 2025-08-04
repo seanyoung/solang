@@ -7,28 +7,32 @@ use crate::sema::ast::Type;
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum Operator {
     Add,
+    OverflowingAdd,
     Subtract,
+    OverflowingSubtract,
     Multiply,
+    OverflowingMultiply,
     SignedDivide,
     UnsignedDivide,
     Modulo,
     SignedModulo,
     UnsignedModulo,
     Power,
+    OverflowingPower,
     BitwiseOr,
     BitwiseAnd,
     BitwiseXor,
     ShiftLeft,
     SignedShiftRight,
     UnsignedShiftRight,
-    More,
     SignedMore,
     UnsignedMore,
-    Less,
     SignedLess,
     UnsignedLess,
-    MoreEqual,
-    LessEqual,
+    SignedMoreEqual,
+    UnsignedMoreEqual,
+    SignedLessEqual,
+    UnsignedLessEqual,
     Equal,
     NotEqual,
     StringConcat,
@@ -41,46 +45,78 @@ pub enum Operator {
     Trunc(Type),
     Cast(Type),
     BytesCast,
-    UnaryMinus,
-    Complement,
+    Negate,
+    OverflowingNegate,
+    BitwiseNot,
 }
 
 impl Expression {
     /// Get the respective Operator from an Expression
     pub fn get_ave_operator(&self) -> Operator {
         match self {
-            Expression::Add(..) => Operator::Add,
-            Expression::Subtract(..) => Operator::Subtract,
-            Expression::Multiply(..) => Operator::Multiply,
-            Expression::SignedDivide(..) => Operator::SignedDivide,
-            Expression::UnsignedDivide(..) => Operator::UnsignedDivide,
-            Expression::SignedModulo(..) => Operator::SignedModulo,
-            Expression::UnsignedModulo(..) => Operator::UnsignedModulo,
-            Expression::Power(..) => Operator::Power,
-            Expression::BitwiseOr(..) => Operator::BitwiseOr,
-            Expression::BitwiseAnd(..) => Operator::BitwiseAnd,
-            Expression::BitwiseXor(..) => Operator::BitwiseXor,
-            Expression::ShiftLeft(..) => Operator::ShiftLeft,
-            Expression::ShiftRight(_, _, _, _, true) => Operator::SignedShiftRight,
-            Expression::ShiftRight(_, _, _, _, false) => Operator::UnsignedShiftRight,
-            Expression::Not(..) => Operator::Not,
-            Expression::ZeroExt(_, ty, ..) => Operator::ZeroExt(ty.clone()),
-            Expression::SignExt(_, ty, ..) => Operator::SignExt(ty.clone()),
-            Expression::Trunc(_, ty, ..) => Operator::Trunc(ty.clone()),
-            Expression::Cast(_, ty, ..) => Operator::Cast(ty.clone()),
-            Expression::BytesCast(..) => Operator::BytesCast,
-            Expression::UnaryMinus(..) => Operator::UnaryMinus,
-            Expression::SignedMore(..) => Operator::SignedMore,
-            Expression::UnsignedMore(..) => Operator::UnsignedMore,
-            Expression::SignedLess(..) => Operator::SignedLess,
-            Expression::UnsignedLess(..) => Operator::UnsignedLess,
-            Expression::MoreEqual(..) => Operator::MoreEqual,
-            Expression::LessEqual(..) => Operator::LessEqual,
-            Expression::Equal(..) => Operator::Equal,
-            Expression::NotEqual(..) => Operator::NotEqual,
-            Expression::Complement(..) => Operator::Complement,
-            Expression::StringCompare(..) => Operator::StringCompare,
-            Expression::StringConcat(..) => Operator::StringConcat,
+            Expression::Add { overflowing, .. } => {
+                if *overflowing {
+                    Operator::OverflowingAdd
+                } else {
+                    Operator::Add
+                }
+            }
+            Expression::Subtract { overflowing, .. } => {
+                if *overflowing {
+                    Operator::OverflowingSubtract
+                } else {
+                    Operator::Subtract
+                }
+            }
+            Expression::Multiply { overflowing, .. } => {
+                if *overflowing {
+                    Operator::OverflowingMultiply
+                } else {
+                    Operator::Multiply
+                }
+            }
+            Expression::SignedDivide { .. } => Operator::SignedDivide,
+            Expression::UnsignedDivide { .. } => Operator::UnsignedDivide,
+            Expression::SignedModulo { .. } => Operator::SignedModulo,
+            Expression::UnsignedModulo { .. } => Operator::UnsignedModulo,
+            Expression::Power { overflowing, .. } => {
+                if *overflowing {
+                    Operator::OverflowingPower
+                } else {
+                    Operator::Power
+                }
+            }
+            Expression::BitwiseOr { .. } => Operator::BitwiseOr,
+            Expression::BitwiseAnd { .. } => Operator::BitwiseAnd,
+            Expression::BitwiseXor { .. } => Operator::BitwiseXor,
+            Expression::ShiftLeft { .. } => Operator::ShiftLeft,
+            Expression::ShiftRight { signed: true, .. } => Operator::SignedShiftRight,
+            Expression::ShiftRight { signed: false, .. } => Operator::UnsignedShiftRight,
+            Expression::Not { .. } => Operator::Not,
+            Expression::ZeroExt { ty, .. } => Operator::ZeroExt(ty.clone()),
+            Expression::SignExt { ty, .. } => Operator::SignExt(ty.clone()),
+            Expression::Trunc { ty, .. } => Operator::Trunc(ty.clone()),
+            Expression::Cast { ty, .. } => Operator::Cast(ty.clone()),
+            Expression::BytesCast { .. } => Operator::BytesCast,
+            Expression::Negate { overflowing, .. } => {
+                if *overflowing {
+                    Operator::OverflowingNegate
+                } else {
+                    Operator::Negate
+                }
+            }
+            Expression::More { signed: true, .. } => Operator::SignedMore,
+            Expression::More { signed: false, .. } => Operator::UnsignedMore,
+            Expression::Less { signed: true, .. } => Operator::SignedLess,
+            Expression::Less { signed: false, .. } => Operator::UnsignedLess,
+            Expression::MoreEqual { signed: true, .. } => Operator::SignedMoreEqual,
+            Expression::MoreEqual { signed: false, .. } => Operator::UnsignedMoreEqual,
+            Expression::LessEqual { signed: true, .. } => Operator::SignedLessEqual,
+            Expression::LessEqual { signed: false, .. } => Operator::UnsignedLessEqual,
+            Expression::Equal { .. } => Operator::Equal,
+            Expression::NotEqual { .. } => Operator::NotEqual,
+            Expression::BitwiseNot { .. } => Operator::BitwiseNot,
+            Expression::StringCompare { .. } => Operator::StringCompare,
             Expression::AdvancePointer { .. } => Operator::AdvancePointer,
             _ => {
                 unreachable!("Expression does not represent an operator.")

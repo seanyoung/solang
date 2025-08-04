@@ -178,7 +178,6 @@ fn if_block() {
 
 #[test]
 fn switch() {
-    // TODO: switch statements are not yet supported, so there is no way to test mutability here
     let file = r#"
     contract testTypes {
     function testAsm(uint[] calldata vl) public pure {
@@ -198,7 +197,7 @@ fn switch() {
     let ns = parse(file);
     assert!(ns
         .diagnostics
-        .contains_message("switch statements have no implementation in code generation yet. Please, file a GitHub issue if there is urgent need for such a feature"));
+        .contains_message("function declared 'pure' but this expression reads from state"));
 
     let file = r#"
     contract testTypes {
@@ -220,7 +219,7 @@ fn switch() {
     let ns = parse(file);
     assert!(ns
         .diagnostics
-        .contains_message("switch statements have no implementation in code generation yet. Please, file a GitHub issue if there is urgent need for such a feature"));
+        .contains_message("function declared 'pure' but this expression reads from state"));
 
     let file = r#"
     contract testTypes {
@@ -242,7 +241,7 @@ fn switch() {
     let ns = parse(file);
     assert!(ns
         .diagnostics
-        .contains_message("switch statements have no implementation in code generation yet. Please, file a GitHub issue if there is urgent need for such a feature"));
+        .contains_message("function declared 'pure' but this expression reads from state"));
 }
 
 #[test]
@@ -353,7 +352,7 @@ fn pure_function() {
     // TODO: There is no implemented function that writes to state
     assert!(ns
         .diagnostics
-        .contains_message("builtin 'log0' is not available for target ewasm. Please, open a GitHub issue at https://github.com/hyperledger-labs/solang/issues if there is need to support this function"));
+        .contains_message("function declared 'pure' but this expression writes to state"));
 }
 
 #[test]
@@ -376,7 +375,7 @@ fn view_function() {
     let ns = parse(file);
     assert!(ns
         .diagnostics
-        .contains_message("builtin 'create' is not available for target ewasm. Please, open a GitHub issue at https://github.com/hyperledger-labs/solang/issues if there is need to support this function"));
+        .contains_message("function declared 'view' but this expression writes to state"));
 
     let file = r#"
     contract testTypes {

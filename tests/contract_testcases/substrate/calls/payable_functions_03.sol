@@ -1,7 +1,0 @@
-
-        contract c {
-            fallback() public {
-
-            }
-        }
-        

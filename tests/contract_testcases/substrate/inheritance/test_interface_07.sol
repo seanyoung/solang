@@ -1,5 +1,0 @@
-
-        interface bar {
-            int x;
-        }
-        

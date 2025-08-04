@@ -1,4 +1,0 @@
-
-        library c {
-            fallback() internal {}
-        }

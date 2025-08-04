@@ -1,44 +1,50 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import expect from 'expect';
-import { publicKeyToHex } from '@solana/solidity';
-import * as web3 from '@solana/web3.js';
-import { loadContract } from './setup';
+import {Transaction, SystemProgram, sendAndConfirmTransaction, Keypair, LAMPORTS_PER_SOL} from '@solana/web3.js';
+import { loadContractAndCallConstructor } from './setup';
+import {BN} from '@coral-xyz/anchor';
 
 describe('Deploy solang contract and test', function () {
     this.timeout(500000);
 
     it('balances', async function () {
-        let { contract, connection, payer, storage } = await loadContract('balances', 'balances.abi');
+        let { program, storage, payer, provider } = await loadContractAndCallConstructor('balances', []);
 
-        let res = await contract.functions.get_balance(publicKeyToHex(payer.publicKey), {
-            accounts: [payer.publicKey],
-        });
+        let res = await program.methods.getBalance()
+            .accounts({
+                acc1: payer.publicKey
+            })
+            .view();
 
-        let bal = Number(res.result);
+        let bal = Number(res);
 
-        let rpc_bal = await connection.getBalance(payer.publicKey);
+        let rpc_bal = await provider.connection.getBalance(payer.publicKey);
 
         expect(bal + 5000).toBe(rpc_bal);
 
-        // we wish to test the `.send()` function, so first top up the storage balance
-        let before_bal = await connection.getBalance(storage.publicKey);
-
         /// transfer some lamports to the storage account
-        var transaction = new web3.Transaction().add(
-            web3.SystemProgram.transfer({
+        let transaction = new Transaction().add(
+            SystemProgram.transfer({
                 fromPubkey: payer.publicKey,
                 toPubkey: storage.publicKey,
-                lamports: 1500,
+                lamports: LAMPORTS_PER_SOL,
             }),
         );
 
         // Sign transaction, broadcast, and confirm
-        await web3.sendAndConfirmTransaction(connection, transaction, [payer]);
+        await sendAndConfirmTransaction(provider.connection, transaction, [payer]);
 
-        await contract.functions.send(publicKeyToHex(payer.publicKey), 500, {
-            writableAccounts: [payer.publicKey],
-            //  signers: [storage],
-        });
+        const new_account = Keypair.generate();
+        const lamports = await provider.connection.getMinimumBalanceForRentExemption(100);
 
-        expect(await connection.getBalance(storage.publicKey)).toBe(before_bal + 1000);
+        await program.methods.transfer(new BN(lamports))
+            .accounts({
+                acc1: storage.publicKey,
+                acc2: new_account.publicKey,
+            })
+            .rpc();
+
+        expect(await provider.connection.getBalance(new_account.publicKey)).toBe(lamports);
     });
 });

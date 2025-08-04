@@ -54,7 +54,7 @@ impl Type {
 }
 
 pub fn gen_abi(contract_no: usize, ns: &Namespace) -> Vec<ABI> {
-    fn parameter_to_abi(param: &Parameter, ns: &Namespace) -> ABIParam {
+    fn parameter_to_abi(param: &Parameter<Type>, ns: &Namespace) -> ABIParam {
         let components = if let Some(n) = param.ty.is_struct_or_array_of_struct() {
             ns.structs[n]
                 .fields
@@ -79,32 +79,13 @@ pub fn gen_abi(contract_no: usize, ns: &Namespace) -> Vec<ABI> {
         .keys()
         .filter_map(|function_no| {
             let func = &ns.functions[*function_no];
-
-            if let Some(base_contract_no) = func.contract_no {
-                if ns.contracts[base_contract_no].is_library() {
-                    return None;
-                }
-
-                if func.ty == pt::FunctionTy::Constructor && base_contract_no != contract_no {
-                    return None;
-                }
+            if ns.function_externally_callable(contract_no, Some(*function_no)) {
+                return Some(func);
             }
-
-            if !matches!(
-                func.visibility,
-                pt::Visibility::Public(_) | pt::Visibility::External(_)
-            ) {
-                return None;
-            }
-
-            if func.ty == pt::FunctionTy::Modifier || !func.has_body {
-                return None;
-            }
-
-            Some(func)
+            None
         })
         .map(|func| ABI {
-            name: func.name.to_owned(),
+            name: func.id.name.to_owned(),
             mutability: format!("{}", func.mutability),
             ty: func.ty.to_string(),
             inputs: if func.ty == pt::FunctionTy::Function || func.ty == pt::FunctionTy::Constructor
@@ -132,13 +113,13 @@ pub fn gen_abi(contract_no: usize, ns: &Namespace) -> Vec<ABI> {
         })
         .chain(
             ns.contracts[contract_no]
-                .sends_events
+                .emits_events
                 .iter()
                 .map(|event_no| {
                     let event = &ns.events[*event_no];
 
                     ABI {
-                        name: event.name.to_owned(),
+                        name: event.id.name.to_owned(),
                         mutability: String::new(),
                         inputs: Some(
                             event

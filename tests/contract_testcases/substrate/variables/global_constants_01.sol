@@ -1,1 +1,0 @@
-uint constant public x = 102;

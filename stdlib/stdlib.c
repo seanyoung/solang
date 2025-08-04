@@ -1,4 +1,5 @@
-// clang --target=wasm32 -c -emit-llvm -O3 -ffreestanding -fno-builtin -Wall stdlib.c
+// SPDX-License-Identifier: Apache-2.0
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -9,22 +10,22 @@
  */
 void __memset8(void *_dest, uint64_t val, uint32_t length)
 {
-	uint64_t *dest = _dest;
+    uint64_t *dest = _dest;
 
-	do
-	{
-		*dest++ = val;
-	} while (--length);
+    do
+    {
+        *dest++ = val;
+    } while (--length);
 }
 
 void __memset(void *_dest, uint8_t val, size_t length)
 {
-	uint8_t *dest = _dest;
+    uint8_t *dest = _dest;
 
-	do
-	{
-		*dest++ = val;
-	} while (--length);
+    do
+    {
+        *dest++ = val;
+    } while (--length);
 }
 
 /*
@@ -33,24 +34,26 @@ void __memset(void *_dest, uint8_t val, size_t length)
  */
 void __memcpy8(void *_dest, void *_src, uint32_t length)
 {
-	uint64_t *dest = _dest;
-	uint64_t *src = _src;
+    uint64_t *dest = _dest;
+    uint64_t *src = _src;
 
-	do
-	{
-		*dest++ = *src++;
-	} while (--length);
+    do
+    {
+        *dest++ = *src++;
+    } while (--length);
 }
 
-void __memcpy(void *_dest, const void *_src, uint32_t length)
+void *__memcpy(void *_dest, const void *_src, uint32_t length)
 {
-	uint8_t *dest = _dest;
-	const uint8_t *src = _src;
+    uint8_t *dest = _dest;
+    const uint8_t *src = _src;
 
-	while (length--)
-	{
-		*dest++ = *src++;
-	}
+    while (length--)
+    {
+        *dest++ = *src++;
+    }
+
+    return dest;
 }
 
 /*
@@ -58,25 +61,25 @@ void __memcpy(void *_dest, const void *_src, uint32_t length)
  */
 void __bzero8(void *_dest, uint32_t length)
 {
-	uint64_t *dest = _dest;
+    uint64_t *dest = _dest;
 
-	while (length--)
-	{
-		*dest++ = 0;
-	}
+    while (length--)
+    {
+        *dest++ = 0;
+    }
 }
 
 int __memcmp_ord(uint8_t *a, uint8_t *b, uint32_t len)
 {
-	do
-	{
-		int diff = (int)(*a++) - (int)(*b++);
+    do
+    {
+        int diff = (int)(*a++) - (int)(*b++);
 
-		if (diff)
-			return diff;
-	} while (--len);
+        if (diff)
+            return diff;
+    } while (--len);
 
-	return 0;
+    return 0;
 }
 
 // This function is used for abi decoding integers.
@@ -85,122 +88,109 @@ int __memcmp_ord(uint8_t *a, uint8_t *b, uint32_t len)
 // order since wasm is little endian.
 void __be32toleN(uint8_t *from, uint8_t *to, uint32_t length)
 {
-	from += 31;
+    from += 31;
 
-	do
-	{
-		*to++ = *from--;
-	} while (--length);
+    do
+    {
+        *to++ = *from--;
+    } while (--length);
 }
 
 void __beNtoleN(uint8_t *from, uint8_t *to, uint32_t length)
 {
-	from += length;
+    from += length;
 
-	do
-	{
-		*to++ = *--from;
-	} while (--length);
+    do
+    {
+        *to++ = *--from;
+    } while (--length);
 }
 
 // This function is for used for abi encoding integers
 // ABI encoding is big endian.
 void __leNtobe32(uint8_t *from, uint8_t *to, uint32_t length)
 {
-	to += 31;
+    to += 31;
 
-	do
-	{
-		*to-- = *from++;
-	} while (--length);
+    do
+    {
+        *to-- = *from++;
+    } while (--length);
 }
 
 void __leNtobeN(uint8_t *from, uint8_t *to, uint32_t length)
 {
-	to += length;
-
-	do
-	{
-		*--to = *from++;
-	} while (--length);
-}
-
-// Create a new vector. If initial is -1 then clear the data. This is done since a null pointer valid in wasm
-struct vector *vector_new(uint32_t members, uint32_t size, uint8_t *initial)
-{
-	struct vector *v;
-	size_t size_array = members * size;
-
-	v = __malloc(sizeof(*v) + size_array);
-	v->len = members;
-	v->size = members;
-
-	uint8_t *data = v->data;
-
-	if ((int)initial != -1)
-	{
-		while (size_array--)
-		{
-			*data++ = *initial++;
-		}
-	}
-	else
-	{
-		while (size_array--)
-		{
-			*data++ = 0;
-		}
-	}
-
-	return v;
+    to += length;
+    do
+    {
+        *--to = *from++;
+    } while (--length);
 }
 
 uint64_t vector_hash(struct vector *v)
 {
-	uint64_t hash = 0;
-	uint8_t *data = v->data;
-	uint32_t len = v->len;
+    uint64_t hash = 0;
+    uint8_t *data = v->data;
+    uint32_t len = v->len;
 
-	while (len--)
-	{
-		hash += *data;
-	}
+    while (len--)
+    {
+        hash += *data;
+    }
 
-	return hash;
+    return hash;
 }
 
 bool __memcmp(uint8_t *left, uint32_t left_len, uint8_t *right, uint32_t right_len)
 {
-	if (left_len != right_len)
-		return false;
+    if (left_len != right_len)
+        return false;
 
-	while (left_len--)
-	{
-		if (*left++ != *right++)
-			return false;
-	}
+    while (left_len--)
+    {
+        if (*left++ != *right++)
+            return false;
+    }
 
-	return true;
+    return true;
 }
 
-struct vector *concat(uint8_t *left, uint32_t left_len, uint8_t *right, uint32_t right_len)
+#ifndef TEST
+
+#ifdef __wasm__
+#define VECTOR_EMPTY ((uint8_t *)~0l)
+#else
+#define VECTOR_EMPTY ((uint8_t *)0l)
+#endif
+
+// Create a new vector. If initial is -1 then clear the data. This is done since a null pointer is valid in Wasm
+struct vector *vector_new(uint32_t members, uint32_t size, uint8_t *initial)
 {
-	size_t size_array = left_len + right_len;
-	struct vector *v = __malloc(sizeof(*v) + size_array);
-	v->len = size_array;
-	v->size = size_array;
+    struct vector *v;
+    uint32_t size_array = members * size;
 
-	uint8_t *data = v->data;
+    v = __malloc(sizeof(*v) + size_array);
+    v->len = members;
+    v->size = members;
 
-	while (left_len--)
-	{
-		*data++ = *left++;
-	}
+    uint8_t *data = v->data;
 
-	while (right_len--)
-	{
-		*data++ = *right++;
-	}
+    if (initial != VECTOR_EMPTY)
+    {
+        while (size_array--)
+        {
+            *data++ = *initial++;
+        }
+    }
+    else
+    {
+        while (size_array--)
+        {
+            *data++ = 0;
+        }
+    }
 
-	return v;
+    return v;
 }
+
+#endif

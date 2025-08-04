@@ -4,19 +4,40 @@ Contributing
 Solang is in active development, so there are many ways in which you can
 contribute.
 
-Target Specific
----------------
-
-Solang supports Substrate, ewasm, and Solana. These targets need testing
-via integration tests. New targets like
-`Fabric <https://github.com/hyperledger-labs/fabric-chaincode-wasm>`_ need to be
-added, and tests added.
+* Consider that users who will read the docs are from different background and cultures and that they have different preferences.
+* Avoid potential offensive terms and, for instance, prefer "allow list and deny list" to "white list and black list".
+* We believe that we all have a role to play to improve our world, and even if writing inclusive doc might not look like a huge improvement, it's a first step in the right direction.
+* We suggest to refer to `Microsoft bias free writing guidelines <https://docs.microsoft.com/en-us/style-guide/bias-free-communication>`_
+  and `Google inclusive doc writing guide <https://developers.google.com/style/inclusive-documentation>`_ as starting points.
 
 How to report issues
 --------------------
 
 Please report issues to
-`github issues <https://github.com/hyperledger-labs/solang/issues>`_.
+`github issues <https://github.com/hyperledger-solang/solang/issues>`_.
+
+How to contribute code
+----------------------
+
+Code contributions are submitted via 
+`pull requests <https://github.com/hyperledger-solang/solang/compare>`_.
+
+Please fork this repository and make desired changes inside a dedicated branch on your fork.
+Prior to opening a pull request for your branch, make sure that the code in your branch
+
+* does compile without any warnings (run ``cargo build --workspace``)
+* does not produce any clippy lints (run ``cargo clippy --workspace``)
+* does pass all unit tests (run ``cargo test --workspace``)
+* has no merge conflicts with the ``main`` branch
+* is correctly formatted (run ``cargo fmt --all`` if your IDE does not do that automatically)
+
+Target Specific
+---------------
+
+Solang supports Polkadot and Solana. These targets need testing
+via integration tests. New targets like
+`Fabric <https://github.com/hyperledger-solang/fabric-chaincode-wasm>`_ need to be
+added, and tests added.
 
 Debugging issues with LLVM
 --------------------------

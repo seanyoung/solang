@@ -1,4 +1,4 @@
-// https://github.com/hyperledger-labs/solang/issues/731
+// https://github.com/hyperledger-solang/solang/issues/731
 contract TestContract {
     struct Data {
         bytes32 a1;
@@ -13,3 +13,6 @@ contract TestContract {
         (g.a1, g.a2) = (Hashes[id+1], Hashes[id+2]);
     }
 }
+
+// ---- Expect: diagnostics ----
+// warning: 12:39-47: function parameter 'needHash' is unused

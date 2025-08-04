@@ -32,10 +32,6 @@ block, or any block except for the most recent 256. Do not use this a source of
 randomness unless you know what you are doing.
 
 .. note::
-    This function is not available on Parity Substrate. When using Parity Substrate,
-    use ``random()`` as a source of random data.
-
-.. note::
     This function is not available on Solana. There is the
     `recent block hashes account <https://edge.docs.solana.com/developing/runtime-facilities/sysvars#recentblockhashes>`_
     that looks useful at first glance, however it is not usable because:
@@ -43,17 +39,6 @@ randomness unless you know what you are doing.
     - This account is `deprecated <https://github.com/solana-labs/solana/pull/18875>`_.
     - It does not give any slot of block number, so it is not possible to provide a matching
       function signature.
-
-random(bytes subject) returns (bytes32)
-+++++++++++++++++++++++++++++++++++++++
-
-Returns random bytes based on the subject. The same subject for the same transaction
-will return the same random bytes, so the result is deterministic. The chain has
-a ``max_subject_len``, and if *subject* exceeds that, the transaction will be aborted.
-
-.. note::
-
-    This function is only available on Parity Substrate.
 
 ``msg`` properties
 ++++++++++++++++++
@@ -64,10 +49,11 @@ uint128 ``msg.value``
 bytes ``msg.data``
     The raw ABI encoded arguments passed to the current call.
 
-bytes4 ``msg.sig``
-    Function selector from the ABI encoded calldata, e.g. the first four bytes. This
-    might be 0 if no function selector was present. In Ethereum, constructor calls do not
-    have function selectors but in Parity Substrate they do.
+bytes4 (Polkadot) or bytes8 (Solana) ``msg.sig``
+    Function selector (or discriminator for Solana) from the encoded calldata,
+    e.g. the first four or eight bytes. This might be 0 if no function selector was present.
+    In Ethereum, constructor calls do not have function selectors but in Polkadot they do.
+    On Solana, selectors are called discriminators.
 
 address ``msg.sender``
     The sender of the current call. This is either the address of the contract
@@ -80,9 +66,8 @@ address ``msg.sender``
 .. _gasprice:
 
 uint128 ``tx.gasprice``
-    The price of one unit of gas, only available with the ewasm target.
-    This field cannot be used on Parity Substrate, the explanation
-    is in the warning box below.
+    The price of one unit of gas. This field cannot be used on Polkadot,
+    see the warning box below.
 
 .. note::
     ``tx.gasprice`` is not available on Solana.
@@ -94,7 +79,7 @@ uint128 ``tx.gasprice(uint64 gas)``
     The total price of `gas` units of gas.
 
 .. warning::
-    On Parity Substrate, the cost of one gas unit may not be an exact whole round value. In fact,
+    On Polkadot, the cost of one gas unit may not be an exact whole round value. In fact,
     if the gas price is less than 1 it may round down to 0, giving the incorrect appearance gas is free.
     Therefore, avoid the ``tx.gasprice`` member in favour of the function ``tx.gasprice(uint64 gas)``.
 
@@ -115,37 +100,13 @@ uint128 ``tx.gasprice(uint64 gas)``
     Note this function is not available on the Ethereum Foundation Solidity compiler.
 
 address ``tx.origin``
-    The address that started this transaction. Not available on Parity Substrate or Solana.
+    The address that started this transaction. Not available on Polkadot or Solana.
 
 AccountInfo[] ``tx.accounts``
     Only available on Solana. See :ref:`account_info`. Here is an example:
 
-.. code-block:: solidity
-
-    import {AccountInfo} from 'solana';
-
-    contract SplToken {
-       function get_token_account(address token) internal view returns (AccountInfo) {
-               for (uint64 i = 0; i < tx.accounts.length; i++) {
-                       AccountInfo ai = tx.accounts[i];
-                       if (ai.key == token) {
-                               return ai;
-                       }
-               }
-
-               revert("token not found");
-       }
-
-        function total_supply(address token) public view returns (uint64) {
-                AccountInfo account = get_token_account(token);
-
-                return account.data.readUint64LE(33);
-        }
-    }
-
-address ``tx.program_id``
-    The address or account of the currently executing program. Only available on
-    Solana.
+.. include:: ../examples/solana/accountinfo.sol
+  :code: solidity
 
 ``block`` properties
 ++++++++++++++++++++++
@@ -177,15 +138,11 @@ Solana
 uint64 ``block.slot``
     The current slot. This is an alias for ``block.number``.
 
-Parity Substrate
-~~~~~~~~~~~~~~~~
-
-uint128 ``block.tombstone_deposit``
-    The amount needed for a tombstone. Without it, contracts will disappear
-    completely if the balance runs out.
+Polkadot
+~~~~~~~~
 
 uint128 ``block.minimum_deposit``
-    The minimum amonut needed to create a contract. This does not include
+    The minimum amount needed to create a contract. This does not include
     storage rent.
 
 Ethereum
@@ -209,14 +166,8 @@ assert(bool)
 
 Assert takes a boolean argument. If that evaluates to false, execution is aborted.
 
-
-.. code-block:: solidity
-
-    contract c {
-        constructor(int x) {
-            assert(x > 0);
-        }
-    }
+.. include:: ../examples/revert.sol
+  :code: solidity
 
 revert() or revert(string)
 ++++++++++++++++++++++++++
@@ -229,15 +180,8 @@ a function.
 If the caller is another contract, it can use the `ReasonCode` in a :ref:`try-catch`
 statement.
 
-.. code-block:: solidity
-
-    contract x {
-        constructor(address foobar) {
-            if (a == address(0)) {
-                revert("foobar must a valid address");
-            }
-        }
-    }
+.. include:: ../examples/assert.sol
+  :code: solidity
 
 require(bool) or require(bool, string)
 ++++++++++++++++++++++++++++++++++++++
@@ -248,21 +192,14 @@ if the `bool` arguments is `false`, then execution is aborted. There is an optio
 `string` argument which is called the `ReasonCode`, which can be used by the caller
 to identify what the problem is.
 
-.. code-block:: solidity
-
-    contract x {
-        constructor(address foobar) {
-            require(foobar != address(0), "foobar must a valid address");
-        }
-    }
-
+.. include:: ../examples/require.sol
+  :code: solidity
 
 ABI encoding and decoding
 _________________________
 
-The ABI encoding depends on the target being compiled for. Substrate uses the
-`SCALE Codec <https://docs.substrate.io/reference/scale-codec/>`_ and ewasm uses
-`Ethereum ABI encoding <https://docs.soliditylang.org/en/v0.7.6/abi-spec.html>`_.
+The ABI encoding depends on the target being compiled for. Polkadot uses the
+`SCALE Codec <https://docs.substrate.io/reference/scale-codec/>`_.
 
 abi.decode(bytes, (*type-list*))
 ++++++++++++++++++++++++++++++++
@@ -292,31 +229,52 @@ ABI encodes the arguments to bytes. Any number of arguments can be provided.
     uint16 x = 241;
     bytes foo = abi.encode(x);
 
-On Substrate, foo will be ``hex"f100"``. On Ethereum this will be ``hex"00000000000000000000000000000000000000000000000000000000000000f1"``.
+On Polkadot, foo will be ``hex"f100"``. On Ethereum this will be ``hex"00000000000000000000000000000000000000000000000000000000000000f1"``.
 
-abi.encodeWithSelector(bytes4 selector, ...)
+abi.encodeWithSelector(selector, ...)
 ++++++++++++++++++++++++++++++++++++++++++++
 
-ABI encodes the arguments with the function selector first. After the selector, any number of arguments
-can be provided.
+ABI encodes the arguments with the function selector, which is known as the discriminator on Solana.
+After the selector, any number of arguments can be provided.
 
 .. code-block:: solidity
 
-    bytes foo = abi.encodeWithSelector(hex"01020304", uint16(0xff00), "ABCD");
+    // An eight-byte selector (discriminator) is exclusive for Solana.
+    // On Polkadot, the selector contains four bytes. hex"01020304" is an example.
+    bytes foo = abi.encodeWithSelector(hex"0102030405060708", uint16(0xff00));
 
-On Substrate, foo will be ``hex"0403020100ff"``. On Ethereum this will be ``hex"01020304000000000000000000000000000000000000000000000000000000000000ff00"``.
+On Solana, foo will be ``hex"080706050403020100ff"``. In addition, a discriminator for a Solidity function on Solana
+are the first eight bytes of the sha-256 hash of its name converted to camel case and preceded
+by the prefix ``global:``, as the following:
+
+.. code-block:: solidity
+
+    bytes8 discriminator = bytes8(sha256(bytes("global:myFunctionName")));
 
 abi.encodeWithSignature(string signature, ...)
 ++++++++++++++++++++++++++++++++++++++++++++++
 
-ABI encodes the arguments with the ``bytes4`` hash of the signature. After the signature, any number of arguments
-can be provided. This is equivalent to ``abi.encodeWithSignature(bytes4(keccak256(signature)), ...)``.
+ABI encodes the arguments with the hash of the signature. After the signature, any number of arguments
+can be provided.
+
+On Polkadot, the signature is the name of the function followed by its arguments, for example:
 
 .. code-block:: solidity
 
-    bytes foo = abi.encodeWithSignature("test2(uint64)", uint64(257));
+    bytes foo = abi.encodeWithSignature("foo_bar(uint64)", uint64(257));
 
-On Substrate, foo will be ``hex"296dacf0_0101_0000__0000_0000"``. On Ethereum this will be ``hex"296dacf0_0000000000000000000000000000000000000000000000000000000000000101"``.
+``foo`` will be ``hex"e934aa71_0101_0000__0000_0000"``.  This is equivalent to ``abi.encodeWithSelector(bytes4(keccak256("test2(uint64)")), ...)``.
+
+On Solana, the signature is known as the discriminator image. It is the function name without any arguments,
+converted to camel case, and preceded by the prefix ``global:``.
+For example, if you had the function ``foo_bar(uint64)``, the discriminator image would be ``global:fooBar``.
+
+.. code-block:: solidity
+
+    bytes foo = abi.encodeWithSignature("global:fooBar", uint64(257));
+
+This builtin is equivalent to
+``abi.encodeWithSelector(bytes8(sha256(bytes("global:fooBar"))), ...)`` for Solana.
 
 abi.encodePacked(...)
 +++++++++++++++++++++
@@ -329,23 +287,90 @@ bytes will be encoded, not the length. It is not possible to decode packed encod
 
     bytes foo = abi.encodePacked(uint16(0xff00), "ABCD");
 
-On Substrate, foo will be ``hex"00ff41424344"``. On Ethereum this will be ``hex"ff0041424344"``.
+On Polkadot, foo will be ``hex"00ff41424344"``. On Ethereum this will be ``hex"ff0041424344"``.
 
 abi.encodeCall(function, ...)
 +++++++++++++++++++++++++++++
 
 ABI encodes the function call to the function which should be specified as ``ContractName.FunctionName``. The arguments
-are cast and checked against the function specified as the first argument.
+are cast and checked against the function specified as the first argument. The arguments must be in a tuple, e.g.
+``(a, b, c)``. If there is a single argument no tuple is required.
 
-.. code-block:: solidity
+.. include:: ../examples/abi_encode_call.sol
+  :code: solidity
 
-    contract c {
-        function f1() public {
-            bytes foo = abi.encodeCall(c.bar, 102, true);
-        }
+Hash
+++++
 
-        function bar(int a, bool b) public {}
-    }
+Only available on Polkadot, it represents the ``Hash`` type from ``ink_primitives`` via user type definition.
+Its underlying type is ``bytes32``, but it will be reported correctly as the ``Hash`` type in the metadata.
+
+.. include:: ../examples/polkadot/hash_type.sol
+  :code: solidity
+
+chain_extension(uint32 ID, bytes input) returns (uint32, bytes)
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Only available on Polkadot. Call the chain extension with the given ``ID`` and ``input`` data.
+Returns the return value from the chain extension and the output data.
+
+This function is a low level interface.
+The caller is responsible for encoding the input and decoding the output correctly.
+We expect parachain authors to write their own higher level libraries on top.
+
+.. warning::
+    This function calls the runtime API `call_chain_extension <https://docs.rs/pallet-contracts/latest/pallet_contracts/api_doc/trait.Version0.html#tymethod.call_chain_extension>`_.
+
+	It assumes that the implementation of the chain extension
+	    - reads the input from the ``input_ptr`` parameter, used as a buffer pointer
+	    - writes potential output into the buffer found at the ``output_ptr`` pointer
+	    - respects the output buffer length in ``output_len_ptr`` to prevent OOB writes. The output buffer is 16KB in size.
+	    - writes the amount of bytes written to ``output_ptr`` into the buffer at ``output_len_ptr``
+
+	Unlike with other runtime API calls, the contracts pallet can not guarantee this behaviour.
+	Instead, it's specific to the targeted chain runtime. Hence, when using this builtin,
+	you must be sure that the implementation being called underneath is compatible.
+
+The following example demonstrates the usage of this builtin function.
+It shows how the chain extension example from the `ink! documentation <https://use.ink/macros-attributes/chain-extension/>`_
+looks like in a solidity contract:
+
+.. include:: ../examples/polkadot/call_chain_extension.sol
+  :code: solidity
+
+is_contract(address AccountId) returns (bool)
++++++++++++++++++++++++++++++++++++++++++++++
+
+Only available on Polkadot. Checks whether the given address is a contract address.
+
+caller_is_root() returns (bool)
++++++++++++++++++++++++++++++++
+
+Only available on Polkadot. Returns true if the caller of the contract is `root <https://docs.substrate.io/build/origins/>`_.
+
+set_code_hash(uint8[32] hash) returns (uint32)
+++++++++++++++++++++++++++++++++++++++++++++++
+
+Only available on Polkadot. Replace the contract's code with the code corresponding to ``hash``.
+Assumes that the new code was already uploaded, otherwise the operation fails.
+A return value of 0 indicates success; a return value of 7 indicates that there was no corresponding code found.
+
+.. note::
+
+    This is a low level function. We strongly advise consulting the underlying
+    `API documentation <https://docs.rs/pallet-contracts/latest/pallet_contracts/api_doc/trait.Version0.html#tymethod.set_code_hash>`_
+    to obtain a full understanding of its implications.
+
+This functionality is intended to be used for implementing upgradeable contracts.
+Pitfalls generally applying to writing
+`upgradeable contracts <https://docs.openzeppelin.com/upgrades-plugins/1.x/writing-upgradeable>`_
+must be considered whenever using this builtin function, most notably:
+
+* The contract must safeguard access to this functionality, so that it is only callable by priviledged users.
+* The code you are upgrading to must be
+  `storage compatible <https://docs.openzeppelin.com/upgrades-plugins/1.x/proxies#storage-collisions-between-implementation-versions>`_
+  with the existing code.
+* Constructors and any other initializers, including initial storage value definitions, won't be executed.
 
 Cryptography
 ____________
@@ -372,7 +397,7 @@ This returns the ``bytes16`` blake2_128 hash of the bytes.
 
 .. note::
 
-    This function is only available on Parity Substrate.
+    This function is only available on Polkadot.
 
 blake2_256(bytes)
 +++++++++++++++++
@@ -381,7 +406,7 @@ This returns the ``bytes32`` blake2_256 hash of the bytes.
 
 .. note::
 
-    This function is only available on Parity Substrate.
+    This function is only available on Polkadot.
 
 signatureVerify(address public_key, bytes message, bytes signature)
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -557,31 +582,38 @@ writeAddress(address value, uint32 offset)
 
 Write an ``address`` to the specified offset.
 
+writeString(string value, uint32 offset)
+++++++++++++++++++++++++++++++++++++++++++++
+
+Write the characters of a ``string`` to the specified offset. This function does not
+write the length of the string to the buffer.
+
+writeBytes(bytes value, uint32 offset)
+++++++++++++++++++++++++++++++++++++++++++
+
+Write the bytes of a Solidity dynamic bytes type ``bytes`` to the specified offset.
+This function does not write the length of the byte array to the buffer.
+
+
 Miscellaneous
 _____________
+
+.. _print_function:
 
 print(string)
 +++++++++++++
 
 print() takes a string argument.
 
-.. code-block:: solidity
-
-    contract c {
-        constructor() {
-            print("Hello, world!");
-        }
-    }
+.. include:: ../examples/print.sol
+  :code: solidity
 
 .. note::
 
   print() is not available with the Ethereum Foundation Solidity compiler.
 
-  When using Substrate, this function is only available on development chains.
+  When using Polkadot, this function is only available on development chains.
   If you use this function on a production chain, the contract will fail to load.
-
-  When using ewasm, the function is only available on hera when compiled with
-  debugging.
 
 .. _selfdestruct:
 
@@ -634,3 +666,47 @@ Assuming `arg1` is 512 and `arg2` is 196, the output to the log will be ``foo en
     When formatting integers in to decimals, types larger than 64 bits require expensive division.
     Be mindful this will increase the gas cost. Larger values will incur a higher gas cost.
     Alternatively, use a hexadecimal ``{:x}`` format specifier to reduce the cost.
+
+
+extendTtl(uint32 threshold, uint32 extend_to) 
++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+The ``extendTtl()`` method allows extending the time-to-live (TTL) of a contract storage entry.
+
+If the entry's TTL is below threshold ledgers, this function updates ``live_until_ledger_seq`` such that TTL equals ``extend_to``. The TTL is defined as:
+
+.. math::
+
+TTL = live_until_ledger_seq - current_ledger
+
+
+.. note:: This method is only available on the Soroban target
+
+.. code-block:: solidity
+
+    /// Extends the TTL for the `count` persistent key to 5000 ledgers
+    /// if the current TTL is smaller than 1000 ledgers
+    function extend_ttl() public view returns (int64) {
+        return count.extendTtl(1000, 5000);
+    }
+
+
+
+For more details on managing contract data TTLs in Soroban, refer to the docs for `TTL <https://developers.stellar.org/docs/build/smart-contracts/getting-started/storing-data#managing-contract-data-ttls-with-extend_ttl>`_.
+
+extendInstanceTtl(uint32 threshold, uint32 extend_to)
++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+The extendInstanceTtl() function extends the time-to-live (TTL) of contract instance storage.
+
+If the TTL for the current contract instance and code (if applicable) is below threshold ledgers, this function extends ``live_until_ledger_seq`` such that TTL equals ``extend_to``.
+
+.. note:: This is a global function, not a method, and is only available on the Soroban target
+
+.. code-block:: solidity
+
+    /// Extends the TTL for the contract instance storage to 10000 ledgers
+    /// if the current TTL is smaller than 2000 ledgers
+    function extendInstanceTtl() public view returns (int64) {
+        return extendInstanceTtl(2000, 10000);
+    }

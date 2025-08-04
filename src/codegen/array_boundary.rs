@@ -16,9 +16,15 @@ pub(crate) fn handle_array_assign(
     right: Expression,
     cfg: &mut ControlFlowGraph,
     vartab: &mut Vartable,
-    pos: &usize,
+    pos: usize,
 ) -> Expression {
-    if let Expression::AllocDynamicArray(loc, ty @ Type::Array(..), size, option) = right {
+    if let Expression::AllocDynamicBytes {
+        loc,
+        ty: ty @ Type::Array(..),
+        size,
+        initializer,
+    } = right
+    {
         // If we re-allocate the pointer, create a new temp variable to hold the new array length
         let temp_res = vartab.temp_name("array_length", &Type::Uint(32));
 
@@ -31,24 +37,31 @@ pub(crate) fn handle_array_assign(
             },
         );
 
-        cfg.array_lengths_temps.insert(*pos, temp_res);
+        cfg.array_lengths_temps.insert(pos, temp_res);
 
-        Expression::AllocDynamicArray(
+        Expression::AllocDynamicBytes {
             loc,
             ty,
-            Box::new(Expression::Variable(Loc::Codegen, Type::Uint(32), temp_res)),
-            option,
-        )
+            size: Box::new(Expression::Variable {
+                loc: Loc::Codegen,
+                ty: Type::Uint(32),
+                var_no: temp_res,
+            }),
+            initializer,
+        }
     } else {
-        if let Expression::Variable(_, _, right_res) = &right {
+        if let Expression::Variable {
+            var_no: right_res, ..
+        } = &right
+        {
             // If we have initialized a temp var for this var
             if cfg.array_lengths_temps.contains_key(right_res) {
                 let to_update = cfg.array_lengths_temps[right_res];
 
-                cfg.array_lengths_temps.insert(*pos, to_update);
+                cfg.array_lengths_temps.insert(pos, to_update);
             } else {
                 // If the right hand side doesn't have a temp, it must be a function parameter or a struct member.
-                cfg.array_lengths_temps.remove(pos);
+                cfg.array_lengths_temps.swap_remove(&pos);
             }
         }
 

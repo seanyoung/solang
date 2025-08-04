@@ -1,3 +1,0 @@
-
-        /// @barf
-        contract test {}

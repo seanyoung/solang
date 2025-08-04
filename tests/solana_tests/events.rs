@@ -1,51 +1,85 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::build_solidity;
-use ethabi::{ethereum_types::U256, Token};
-use tiny_keccak::{Hasher, Keccak};
+use crate::{borsh_encoding::BorshToken, build_solidity};
+use borsh::BorshDeserialize;
+use borsh_derive::BorshDeserialize;
+use solang::abi::anchor::event_discriminator;
 
 #[test]
 fn simple_event() {
+    #[derive(BorshDeserialize, PartialEq, Eq, Debug)]
+    struct MyEvent {
+        a: i32,
+        b: i32,
+    }
+
     let mut vm = build_solidity(
         r#"
         contract c {
-            event e(int indexed a, int b);
+            event myevent(int32 indexed a, int32 b);
 
             function go() public {
-                emit e(1, 2);
+                emit myevent(1, -2);
+            }
+
+            function selector() public returns (bytes8) {
+                return myevent.selector;
             }
         }"#,
     );
 
-    vm.constructor("c", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function("go", &[], &[], None);
+    vm.function("go").call();
 
-    let log = vm.events();
+    assert_eq!(vm.events.len(), 1);
+    assert_eq!(vm.events[0].len(), 1);
 
-    assert_eq!(log.len(), 1);
+    let encoded = &vm.events[0][0];
 
-    let program = &vm.stack[0];
+    let discriminator = event_discriminator("myevent");
 
-    let abi = program.abi.as_ref().unwrap();
+    assert_eq!(&encoded[..8], &discriminator[..]);
 
-    let event = &abi.events_by_name("e").unwrap()[0];
+    let decoded = MyEvent::try_from_slice(&encoded[8..]).unwrap();
+    assert_eq!(decoded.a, 1);
+    assert_eq!(decoded.b, -2);
 
-    assert_eq!(log[0].topics[0], event.signature());
+    let returns = vm.function("selector").call().unwrap();
 
-    let decoded = event.parse_log(log[0].clone()).unwrap();
-
-    for log in &decoded.params {
-        match log.name.as_str() {
-            "a" => assert_eq!(log.value, Token::Int(U256::from(1))),
-            "b" => assert_eq!(log.value, Token::Int(U256::from(2))),
-            _ => panic!("unexpected field {}", log.name),
-        }
-    }
+    assert_eq!(
+        returns,
+        BorshToken::FixedArray(
+            discriminator
+                .into_iter()
+                .map(|v| BorshToken::Uint {
+                    width: 8,
+                    value: v.into()
+                })
+                .collect()
+        )
+    );
 }
 
 #[test]
 fn less_simple_event() {
+    #[derive(BorshDeserialize, PartialEq, Eq, Debug)]
+    struct S {
+        f1: i64,
+        f2: bool,
+    }
+
+    #[derive(BorshDeserialize, PartialEq, Eq, Debug)]
+    struct MyOtherEvent {
+        a: i16,
+        b: String,
+        c: [i128; 2],
+        d: S,
+    }
+
     let mut vm = build_solidity(
         r#"
         contract c {
@@ -54,67 +88,56 @@ fn less_simple_event() {
                 bool f2;
             }
 
-            event e(
-                int indexed a,
+            event MyOtherEvent(
+                int16 indexed a,
                 string indexed b,
-                int[2] indexed c,
+                uint128[2] indexed c,
                 S d);
 
             function go() public {
-                emit e(-102, "foobar", [1, 2], S({ f1: 102, f2: true}));
+                emit MyOtherEvent(-102, "foobar", [55431, 7452], S({ f1: 102, f2: true}));
+            }
+
+            function selector() public returns (bytes8) {
+                return MyOtherEvent.selector;
             }
         }"#,
     );
 
-    vm.constructor("c", &[]);
+    let data_account = vm.initialize_data_account();
+    vm.function("new")
+        .accounts(vec![("dataAccount", data_account)])
+        .call();
 
-    vm.function("go", &[], &[], None);
+    vm.function("go").call();
 
-    let log = vm.events();
+    assert_eq!(vm.events.len(), 1);
+    assert_eq!(vm.events[0].len(), 1);
 
-    assert_eq!(log.len(), 1);
+    let encoded = &vm.events[0][0];
 
-    let program = &vm.stack[0];
+    let discriminator = event_discriminator("MyOtherEvent");
+    assert_eq!(&encoded[..8], &discriminator[..]);
 
-    let abi = program.abi.as_ref().unwrap();
+    let decoded = MyOtherEvent::try_from_slice(&encoded[8..]).unwrap();
 
-    let event = &abi.events_by_name("e").unwrap()[0];
+    assert_eq!(decoded.a, -102);
+    assert_eq!(decoded.b, "foobar");
+    assert_eq!(decoded.c, [55431, 7452]);
+    assert_eq!(decoded.d, S { f1: 102, f2: true });
 
-    assert_eq!(log[0].topics[0], event.signature());
+    let returns = vm.function("selector").call().unwrap();
 
-    let decoded = event.parse_log(log[0].clone()).unwrap();
-
-    for log in &decoded.params {
-        match log.name.as_str() {
-            "a" => assert_eq!(
-                log.value,
-                Token::Int(U256::from_dec_str("115792089237316195423570985008687907853269984665640564039457584007913129639834").unwrap())
-            ),
-            "b" => {
-                let mut hasher = Keccak::v256();
-                hasher.update(b"foobar");
-                let mut hash = [0u8; 32];
-                hasher.finalize(&mut hash);
-
-                assert_eq!(log.value, Token::FixedBytes(hash.to_vec()));
-            }
-            "c" => {
-                let mut hasher = Keccak::v256();
-                let mut v = [0u8; 32];
-                v[31] = 1;
-                hasher.update(&v);
-                v[31] = 2;
-                hasher.update(&v);
-                let mut hash = [0u8; 32];
-                hasher.finalize(&mut hash);
-
-                assert_eq!(log.value, Token::FixedBytes(hash.to_vec()));
-            }
-            "d" => {
-                assert_eq!(log.value, Token::Tuple(vec![Token::Int(U256::from(102)), Token::Bool(true)]));
-            }
-
-            _ => panic!("unexpected field {}", log.name),
-        }
-    }
+    assert_eq!(
+        returns,
+        BorshToken::FixedArray(
+            discriminator
+                .into_iter()
+                .map(|v| BorshToken::Uint {
+                    width: 8,
+                    value: v.into()
+                })
+                .collect()
+        )
+    );
 }

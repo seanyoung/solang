@@ -22,15 +22,17 @@ pub struct LoopBuilder<'a> {
 impl<'a> LoopBuilder<'a> {
     /// Create a new loop. This creates the basic blocks and inserts a branch to start of the loop at
     /// the current location. This function should be called first.
-    pub fn new(binary: &Binary<'a>, function: FunctionValue) -> Self {
-        let entry_block = binary.builder.get_insert_block().unwrap();
-        let condition_block = binary.context.append_basic_block(function, "cond");
-        let body_block = binary.context.append_basic_block(function, "body");
-        let done_block = binary.context.append_basic_block(function, "done");
+    pub fn new(bin: &Binary<'a>, function: FunctionValue<'a>) -> Self {
+        let entry_block = bin.builder.get_insert_block().unwrap();
+        let condition_block = bin.context.append_basic_block(function, "cond");
+        let body_block = bin.context.append_basic_block(function, "body");
+        let done_block = bin.context.append_basic_block(function, "done");
 
-        binary.builder.build_unconditional_branch(condition_block);
+        bin.builder
+            .build_unconditional_branch(condition_block)
+            .unwrap();
 
-        binary.builder.position_at_end(condition_block);
+        bin.builder.position_at_end(condition_block);
 
         LoopBuilder {
             phis: HashMap::new(),
@@ -48,12 +50,12 @@ impl<'a> LoopBuilder<'a> {
     /// must be given.
     pub fn add_loop_phi<T: BasicType<'a>>(
         &mut self,
-        binary: &Binary<'a>,
+        bin: &Binary<'a>,
         name: &'static str,
         ty: T,
         initial_value: BasicValueEnum<'a>,
     ) -> BasicValueEnum<'a> {
-        let phi = binary.builder.build_phi(ty, name);
+        let phi = bin.builder.build_phi(ty, name).unwrap();
 
         phi.add_incoming(&[(&initial_value, self.entry_block)]);
 
@@ -67,33 +69,29 @@ impl<'a> LoopBuilder<'a> {
     /// builds the condition and then jumps to do the body; the return value is in the index
     /// which can be used in the body. The body of the loop can be inserted after calling this
     /// function.
-    pub fn over(
-        &mut self,
-        binary: &Binary<'a>,
-        from: IntValue<'a>,
-        to: IntValue<'a>,
-    ) -> IntValue<'a> {
+    pub fn over(&mut self, bin: &Binary<'a>, from: IntValue<'a>, to: IntValue<'a>) -> IntValue<'a> {
         let loop_ty = from.get_type();
-        let loop_phi = binary.builder.build_phi(loop_ty, "index");
+        let loop_phi = bin.builder.build_phi(loop_ty, "index").unwrap();
 
         let loop_var = loop_phi.as_basic_value().into_int_value();
 
-        let next =
-            binary
-                .builder
-                .build_int_add(loop_var, loop_ty.const_int(1, false), "next_index");
-
-        let comp = binary
+        let next = bin
             .builder
-            .build_int_compare(IntPredicate::ULT, loop_var, to, "loop_cond");
+            .build_int_add(loop_var, loop_ty.const_int(1, false), "next_index")
+            .unwrap();
 
-        binary
+        let comp = bin
             .builder
-            .build_conditional_branch(comp, self.body_block, self.done_block);
+            .build_int_compare(IntPredicate::ULT, loop_var, to, "loop_cond")
+            .unwrap();
+
+        bin.builder
+            .build_conditional_branch(comp, self.body_block, self.done_block)
+            .unwrap();
 
         loop_phi.add_incoming(&[(&from, self.entry_block)]);
 
-        binary.builder.position_at_end(self.body_block);
+        bin.builder.position_at_end(self.body_block);
 
         self.loop_phi = Some(loop_phi);
         self.next_index = Some(next);
@@ -104,33 +102,28 @@ impl<'a> LoopBuilder<'a> {
     /// Use this function to set the loop phis to their values at the end of the body
     pub fn set_loop_phi_value(
         &self,
-        binary: &Binary<'a>,
+        bin: &Binary<'a>,
         name: &'static str,
         value: BasicValueEnum<'a>,
     ) {
-        let block = binary.builder.get_insert_block().unwrap();
+        let block = bin.builder.get_insert_block().unwrap();
 
         self.phis[name].add_incoming(&[(&value, block)]);
     }
 
-    /// Can you use this to get the value of a phi in the body or after the loop exits
-    pub fn get_loop_phi(&self, name: &'static str) -> BasicValueEnum<'a> {
-        self.phis[name].as_basic_value()
-    }
-
     /// Call this once the body of the loop has been generated. This will close the loop
     /// and ensure the exit block has been reached.
-    pub fn finish(&self, binary: &Binary<'a>) {
-        let block = binary.builder.get_insert_block().unwrap();
+    pub fn finish(&self, bin: &Binary<'a>) {
+        let block = bin.builder.get_insert_block().unwrap();
 
         let loop_phi = self.loop_phi.unwrap();
 
         loop_phi.add_incoming(&[(self.next_index.as_ref().unwrap(), block)]);
 
-        binary
-            .builder
-            .build_unconditional_branch(self.condition_block);
+        bin.builder
+            .build_unconditional_branch(self.condition_block)
+            .unwrap();
 
-        binary.builder.position_at_end(self.done_block);
+        bin.builder.position_at_end(self.done_block);
     }
 }

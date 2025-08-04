@@ -1,1 +1,0 @@
-uint constant x;

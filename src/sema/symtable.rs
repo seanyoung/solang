@@ -2,11 +2,12 @@
 
 use indexmap::IndexMap;
 use solang_parser::diagnostics::{ErrorType, Level, Note};
-use std::collections::{HashMap, HashSet, LinkedList};
+use std::collections::HashMap;
 use std::str;
 use std::sync::Arc;
 
 use super::ast::{Diagnostic, Namespace, Type};
+use super::expression::ExprContext;
 use crate::sema::ast::Expression;
 use solang_parser::pt;
 
@@ -39,22 +40,23 @@ impl VariableInitializer {
 }
 
 impl Variable {
-    pub fn is_reference(&self) -> bool {
+    pub fn is_reference(&self, ns: &Namespace) -> bool {
         // If the variable has the memory or storage keyword, it can be a reference to another variable.
         // In this case, an assigment may change the value of the variable it is referencing.
         if matches!(
             self.storage_location,
-            Some(pt::StorageLocation::Memory(_)) | Some(pt::StorageLocation::Storage(_))
-        ) {
+            Some(pt::StorageLocation::Memory(_)) | Some(pt::StorageLocation::Storage(_)) | None
+        ) && self.ty.is_reference_type(ns)
+        {
             if let VariableInitializer::Solidity(Some(expr)) = &self.initializer {
                 // If the initializer is an array allocation, a constructor or a struct literal,
                 // the variable is not a reference to another.
                 return !matches!(
                     **expr,
-                    Expression::AllocDynamicArray(..)
-                        | Expression::ArrayLiteral(..)
+                    Expression::AllocDynamicBytes { .. }
+                        | Expression::ArrayLiteral { .. }
                         | Expression::Constructor { .. }
-                        | Expression::StructLiteral(..)
+                        | Expression::StructLiteral { .. }
                 );
             }
         }
@@ -77,28 +79,20 @@ pub enum VariableUsage {
 }
 
 #[derive(Debug, Clone)]
-struct VarScope(HashMap<String, usize>, Option<HashSet<usize>>);
+pub struct VarScope {
+    pub loc: Option<pt::Loc>,
+    pub names: HashMap<String, usize>,
+}
 
 #[derive(Default, Debug, Clone)]
 pub struct Symtable {
     pub vars: IndexMap<usize, Variable>,
-    names: LinkedList<VarScope>,
     pub arguments: Vec<Option<usize>>,
     pub returns: Vec<usize>,
+    pub scopes: Vec<VarScope>,
 }
 
 impl Symtable {
-    pub fn new() -> Self {
-        let mut list = LinkedList::new();
-        list.push_front(VarScope(HashMap::new(), None));
-        Symtable {
-            vars: IndexMap::new(),
-            names: list,
-            arguments: Vec::new(),
-            returns: Vec::new(),
-        }
-    }
-
     pub fn add(
         &mut self,
         id: &pt::Identifier,
@@ -107,6 +101,7 @@ impl Symtable {
         initializer: VariableInitializer,
         usage_type: VariableUsage,
         storage_location: Option<pt::StorageLocation>,
+        context: &mut ExprContext,
     ) -> Option<usize> {
         let pos = ns.next_id;
         ns.next_id += 1;
@@ -128,7 +123,7 @@ impl Symtable {
 
         // the variable has no name, like unnamed return or parameters values
         if !id.name.is_empty() {
-            if let Some(prev) = self.find(&id.name) {
+            if let Some(prev) = self.find(context, &id.name) {
                 ns.diagnostics.push(Diagnostic::error_with_note(
                     id.loc,
                     format!("{} is already declared", id.name),
@@ -138,10 +133,11 @@ impl Symtable {
                 return None;
             }
 
-            self.names
-                .front_mut()
+            context
+                .active_scopes
+                .last_mut()
                 .unwrap()
-                .0
+                .names
                 .insert(id.name.to_string(), pos);
         }
 
@@ -156,8 +152,9 @@ impl Symtable {
         initializer: VariableInitializer,
         usage_type: VariableUsage,
         storage_location: Option<pt::StorageLocation>,
+        context: &mut ExprContext,
     ) -> Option<usize> {
-        if let Some(var) = self.find(&id.name) {
+        if let Some(var) = self.find(context, &id.name) {
             ns.diagnostics.push(Diagnostic {
                 level: Level::Error,
                 ty: ErrorType::DeclarationError,
@@ -171,25 +168,25 @@ impl Symtable {
             return None;
         }
 
-        self.add(id, ty, ns, initializer, usage_type, storage_location)
+        self.add(
+            id,
+            ty,
+            ns,
+            initializer,
+            usage_type,
+            storage_location,
+            context,
+        )
     }
 
-    pub fn find(&self, name: &str) -> Option<&Variable> {
-        for scope in &self.names {
-            if let Some(n) = scope.0.get(name) {
+    pub fn find(&self, context: &mut ExprContext, name: &str) -> Option<&Variable> {
+        for scope in context.active_scopes.iter().rev() {
+            if let Some(n) = scope.names.get(name) {
                 return self.vars.get(n);
             }
         }
 
         None
-    }
-
-    pub fn new_scope(&mut self) {
-        self.names.push_front(VarScope(HashMap::new(), None));
-    }
-
-    pub fn leave_scope(&mut self) {
-        self.names.pop_front();
     }
 
     pub fn get_name(&self, pos: usize) -> &str {
@@ -202,7 +199,7 @@ pub struct LoopScope {
     pub no_continues: usize,
 }
 
-pub struct LoopScopes(LinkedList<LoopScope>);
+pub struct LoopScopes(Vec<LoopScope>);
 
 impl Default for LoopScopes {
     fn default() -> Self {
@@ -212,22 +209,22 @@ impl Default for LoopScopes {
 
 impl LoopScopes {
     pub fn new() -> Self {
-        LoopScopes(LinkedList::new())
+        LoopScopes(Vec::new())
     }
 
-    pub fn new_scope(&mut self) {
-        self.0.push_front(LoopScope {
+    pub fn enter_scope(&mut self) {
+        self.0.push(LoopScope {
             no_breaks: 0,
             no_continues: 0,
         })
     }
 
     pub fn leave_scope(&mut self) -> LoopScope {
-        self.0.pop_front().unwrap()
+        self.0.pop().unwrap()
     }
 
     pub fn do_break(&mut self) -> bool {
-        match self.0.front_mut() {
+        match self.0.last_mut() {
             Some(scope) => {
                 scope.no_breaks += 1;
                 true
@@ -236,8 +233,12 @@ impl LoopScopes {
         }
     }
 
+    pub fn in_a_loop(&self) -> bool {
+        !self.0.is_empty()
+    }
+
     pub fn do_continue(&mut self) -> bool {
-        match self.0.front_mut() {
+        match self.0.last_mut() {
             Some(scope) => {
                 scope.no_continues += 1;
                 true

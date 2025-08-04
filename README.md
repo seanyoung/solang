@@ -1,144 +1,89 @@
-# solang - Solidity Compiler for Solana, Substrate, and ewasm
+<img src="https://raw.githubusercontent.com/hyperledger/solang/main/docs/hl_solang_horizontal-color.svg" alt="Solang Logo" width="75%"/>
 
-[![Discord](https://img.shields.io/discord/905194001349627914?logo=Hyperledger&style=plastic)](https://discord.gg/jhn4rkqNsT)
-[![CI](https://github.com/hyperledger-labs/solang/workflows/test/badge.svg)](https://github.com/hyperledger-labs/solang/actions)
+# solang - Solidity Compiler for Solana, Polkadot and Soroban
+
+[![Discord](https://img.shields.io/discord/905194001349627914?logo=Hyperledger&style=plastic)](https://discord.gg/hyperledger)
+[![CI](https://github.com/hyperledger-solang/solang/workflows/test/badge.svg)](https://github.com/hyperledger-solang/solang/actions)
 [![Documentation Status](https://readthedocs.org/projects/solang/badge/?version=latest)](https://solang.readthedocs.io/en/latest/?badge=latest)
-[![license](https://img.shields.io/github/license/hyperledger-labs/solang.svg)](LICENSE)
-[![LoC](https://tokei.rs/b1/github/hyperledger-labs/solang?category=lines)](https://github.com/hyperledger-labs/solang)
+[![license](https://img.shields.io/github/license/hyperledger/solang.svg)](LICENSE)
+[![LoC](https://tokei.rs/b1/github/hyperledger/solang?category=lines)](https://github.com/hyperledger-solang/solang)
 
 Welcome to Solang, a new Solidity compiler written in rust which uses
-llvm as the compiler backend. Solang can compile Solidity for Solana,
-Substrate, and ewasm. Solang is source compatible with Solidity 0.8, with
-some caveats due to differences in the underlying blockchain.
+llvm as the compiler backend. Solang can compile Solidity for Solana, Soroban and the
+Polkadot Parachains with the `contracts` pallet.
+Solang is source compatible with Solidity 0.8,
+with some caveats due to differences in the underlying blockchain.
 
 Solang is under active development right now, and has
 [extensive documentation](https://solang.readthedocs.io/en/latest/).
 
+## Solana
+
+Please follow the [Solang Getting Started Guide](https://solana.com/developers/guides/solang/getting-started).
+
+Solang is part of the [Solana Tools Suite](https://docs.solana.com/cli/install-solana-cli-tools) (version v1.16.3 and higher).
+There is no need to install it separately.
 
 ## Installation
 
 Solang is available as a Brew cask for MacOS, with the following command:
 
 ```
-brew install hyperledger-labs/solang/solang
+brew install hyperledger/solang/solang
 ```
 
 For other operating systems, please check the [installation guide](https://solang.readthedocs.io/en/latest/installing.html).
 
-## Simple example
+## Build for Polkadot
 
-After installing the compiler, write the following to flipper.sol:
-
-```solidity
-contract flipper {
-	bool private value;
-
-	constructor(bool initvalue) public {
-		value = initvalue;
-	}
-
-	function flip() public {
-		value = !value;
-	}
-
-	function get() public view returns (bool) {
-		return value;
-	}
-}
-```
-
-## Build for Solana
-
-Run:
+Run the following command, selecting the flipper example available on Solang's repository:
 
 ```bash
-solang compile --target solana flipper.sol
+solang compile --target polkadot examples/polkadot/flipper.sol
 ```
 
 Alternatively if you want to use the solang container, run:
 
 ```
-docker run --rm -it -v $(pwd):/sources ghcr.io/hyperledger-labs/solang compile -v -o /sources --target solana /sources/flipper.sol
-```
-
-A file called `flipper.abi` and `bundle.so`. Now install `@solana/solidity`:
-
-```
-npm install @solana/solidity
-```
-
-Save the following to `flipper.js`:
-```javascript
-const { Connection, LAMPORTS_PER_SOL, Keypair } = require('@solana/web3.js');
-const { Contract, Program } = require('@solana/solidity');
-const { readFileSync } = require('fs');
-
-const FLIPPER_ABI = JSON.parse(readFileSync('./flipper.abi', 'utf8'));
-const PROGRAM_SO = readFileSync('./bundle.so');
-
-(async function () {
-    console.log('Connecting to your local Solana node ...');
-    const connection = new Connection('http://localhost:8899', 'confirmed');
-
-    const payer = Keypair.generate();
-
-    console.log('Airdropping SOL to a new wallet ...');
-    const signature = await connection.requestAirdrop(payer.publicKey, LAMPORTS_PER_SOL);
-    await connection.confirmTransaction(signature, 'confirmed');
-
-    const program = Keypair.generate();
-    const storage = Keypair.generate();
-
-    const contract = new Contract(connection, program.publicKey, storage.publicKey, FLIPPER_ABI, payer);
-
-    await contract.load(program, PROGRAM_SO);
-
-    console.log('Program deployment finished, deploying the flipper contract ...');
-
-    await contract.deploy('flipper', [true], storage, 17);
-
-    const res = await contract.functions.get();
-    console.log('state: ' + res.result);
-
-    await contract.functions.flip();
-
-    const res2 = await contract.functions.get();
-    console.log('state: ' + res2.result);
-})();
-```
-
-And now run:
-```
-node flipper.js
-```
-
-## Build for Substrate
-
-### Status
-:warning: Solang was developed against Substrate v3.0. It has been a while since the last time the Substrate target was worked on, which introduced a few known regressions. Currently, the following is known to **not** work with recent Substrate versions:
-
-* Function call arguments of type `address`
-* Function return values of type `address`
-* Cross-contract calls
-* Events with indexed fields
-
-Maintenance on the Substrate target has now resumed and we are working on fixing these issues.
-
-### Building
-Run:
-
-```bash
-solang compile --target substrate flipper.sol
-```
-
-Alternatively if you want to use the solang container, run:
-
-```
-docker run --rm -it -v $(pwd):/sources ghcr.io/hyperledger-labs/solang -v -o /sources --target substrate /sources/flipper.sol
+docker run --rm -it -v $(pwd):/sources ghcr.io/hyperledger/solang compile -v -o /sources --target polkadot /sources/flipper.sol
 ```
 You will have a file called flipper.contract. You can use this directly in
 the [Contracts UI](https://contracts-ui.substrate.io/),
 as if your smart contract was written using ink!.
+
+
+## Build for Soroban
+
+Select one of the supported contracts for Soroban, available in on Solang's repository:
+
+```bash
+solang compile --target soroban examples/soroban/token.sol
+```
+
+You will have a file called `token.wasm`. Deploy it using the [`Stellar CLI`](https://developers.stellar.org/docs/tools/cli), after following the [`Stellar CLI Setup Manual`](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup):
+
+``` bash
+stellar contract deploy --source-account alice --wasm token.wasm --network testnet -- --_admin alice --_name SolangToken --_symbol SOLT --_decimals 18
+ℹ️  Skipping install because wasm already installed
+ℹ️  Using wasm hash b1c84d8b8057a62fb6d77ef55c9e7fb2e66c74136c7df32efd87a1c9d475f1b0
+ℹ️  Simulating deploy transaction…
+ℹ️  Transaction hash is fc3b1f00d2940e646d210e6e96347fd45dc8dd873009604ec67957edb6f6589d
+🔗 https://stellar.expert/explorer/testnet/tx/fc3b1f00d2940e646d210e6e96347fd45dc8dd873009604ec67957edb6f6589d
+ℹ️  Signing transaction: fc3b1f00d2940e646d210e6e96347fd45dc8dd873009604ec67957edb6f6589d
+🌎 Submitting deploy transaction…
+🔗 https://stellar.expert/explorer/testnet/contract/CDGUMUXA6IRRVMMKIVQJWLZZONDXBJ4AITHQS757PTBVAL4U54HI3KEW
+✅ Deployed!
+CDGUMUXA6IRRVMMKIVQJWLZZONDXBJ4AITHQS757PTBVAL4U54HI3KEW
+```
+
+Once deployed, copy the deployed contract ID and interact with it:
+
+``` bash
+stellar contract invoke --network testnet --id CDGUMUXA6IRRVMMKIVQJWLZZONDXBJ4AITHQS757PTBVAL4U54HI3KEW  --source-account alice -- mint --to alice --amount 120
+ℹ️  Signing transaction: e0d68ae85bfbe0fceed8bcadd6613e12b3159f27dbf7c18e35e94de2b4a11ee2
+```
+
+
 
 ## Tentative roadmap
 
@@ -147,40 +92,18 @@ up to date with the newest Solidity syntax and features.  In addition, we focus 
 and improve developer experience.
 Here is a brief description of what we envision for the next versions.
 
-### V0.2
-
-| Milestone                                  | Status      |
-|--------------------------------------------|-------------|
-| Solana SPL tokens compatibility            | Completed   |
-| Parse and resolve inline assembly          | Completed   |
-| Generate code for inline assembly          | Completed   |
-| Support Solana's Program Derived Addresses | In Progress |
-| Support latest Substrate production target | In Progress |
-
-
-### V0.3
-
-| Milestone                                  | Status      |
-|--------------------------------------------|-------------|
-| Call Solana's Rust contracts from Solidity | In progress |
-| Improvements in overflow checking          | In progress |
-| Call Solidity from Solana's Rust contracts | Not started |
-| Improve parser resilience                  | Not started |
-| Improve developer experience for Substrate | Not started |
-| Tooling for calls between ink! <> solidity | Not started |
-
-
 ### V0.4
 
-| Milestone                                          | Status      |
-|----------------------------------------------------|-------------|
-| Improve management over optimization passes        | Not started |
-| Specify values as "1 sol" and "1e9 lamports"       | In progress |
-| Adopt single static assignment for code generation | Not started |
-| Support openzeppelin on Substrate target           | Not started |
-| Provide Solidity -> Substrate porting guide        | Not started |
-
-
+| Feature                                            | Status                                               |
+|----------------------------------------------------|------------------------------------------------------|
+| Improve management over optimization passes        | Not started                                          |
+| Adopt single static assignment for code generation | In progress                                          |
+| Support openzeppelin on Polkadot target            | In progress                                          |
+| Provide Solidity -> Polkadot porting guide         | Not started                                          |
+| Declare accounts for a Solidity function on Solana | In progress                                          |
+| Tooling for calls between ink! <> solidity         | In progress                                          |
+| Provide CLI for node interactions                  | [Done](https://github.com/hyperledger-solang/solang-aqd)    |
+| Support all [Soroban examples](https://github.com/stellar/soroban-examples) | In progress |
 
 ## License
 

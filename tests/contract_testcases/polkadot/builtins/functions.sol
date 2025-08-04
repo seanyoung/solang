@@ -1,0 +1,10 @@
+
+        contract bar {
+            function test() public {
+                int64 b = gasleft();
+
+                assert(b == 14_250_083_331_950_119_597);
+            }
+        }
+// ---- Expect: diagnostics ----
+// error: 4:27-34: implicit conversion would change sign from uint64 to int64

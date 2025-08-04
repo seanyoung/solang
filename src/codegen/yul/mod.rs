@@ -62,13 +62,13 @@ fn yul_function_cfg(
 
     let func_name = format!(
         "{}::yul_function_{}::{}",
-        ns.contracts[contract_no].name, function_no, yul_func.name
+        ns.contracts[contract_no].id, function_no, yul_func.name
     );
     let mut cfg = ControlFlowGraph::new(func_name, ASTFunction::YulFunction(function_no));
 
     cfg.params = yul_func.params.clone();
     cfg.returns = yul_func.returns.clone();
-    cfg.selector = 0;
+    cfg.selector = Vec::new();
     cfg.public = false;
     cfg.ty = FunctionTy::Function;
     cfg.nonpayable = true;
@@ -86,18 +86,16 @@ fn yul_function_cfg(
                 .symtable
                 .returns
                 .iter()
-                .map(|pos| {
-                    Expression::Variable(
-                        pt::Loc::Codegen,
-                        yul_func.symtable.vars[pos].ty.clone(),
-                        *pos,
-                    )
+                .map(|pos| Expression::Variable {
+                    loc: pt::Loc::Codegen,
+                    ty: yul_func.symtable.vars[pos].ty.clone(),
+                    var_no: *pos,
                 })
                 .collect::<Vec<Expression>>(),
         }
     };
 
-    for stmt in &yul_func.body {
+    for stmt in &yul_func.body.statements {
         statement(
             stmt,
             contract_no,
@@ -110,15 +108,10 @@ fn yul_function_cfg(
         );
     }
 
-    if yul_func.body.is_empty()
-        || (!yul_func.body.is_empty() && yul_func.body.last().unwrap().is_reachable())
-    {
+    if yul_func.body.is_next_reachable() {
         cfg.add(&mut vartab, returns);
     }
 
-    let (vars, next_id) = vartab.drain();
-    cfg.vars = vars;
-    ns.next_id = next_id;
-
+    vartab.finalize(ns, &mut cfg);
     cfg
 }

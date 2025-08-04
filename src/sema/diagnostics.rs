@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::ast::{Diagnostic, ErrorType, Level, Namespace};
+use super::ast::{Diagnostic, Level, Namespace};
 use crate::file_resolver::FileResolver;
 use crate::standard_json::{LocJson, OutputJson};
 use codespan_reporting::{diagnostic, files, term};
@@ -8,7 +8,7 @@ use itertools::Itertools;
 use solang_parser::pt::Loc;
 use std::{
     collections::HashMap,
-    slice::Iter,
+    slice::{Iter, IterMut},
     {io, sync::Arc},
 };
 
@@ -31,6 +31,10 @@ impl Diagnostics {
         self.contents.iter()
     }
 
+    pub fn iter_mut(&mut self) -> IterMut<Diagnostic> {
+        self.contents.iter_mut()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.contents.is_empty()
     }
@@ -45,24 +49,6 @@ impl Diagnostics {
     pub fn extend(&mut self, diagnostics: Diagnostics) {
         self.has_error |= diagnostics.has_error;
         self.contents.extend(diagnostics.contents);
-    }
-
-    /// Filter out all the diagnostics which are not the result of casting problems
-    pub fn extend_non_casting(&mut self, other: &Diagnostics) -> bool {
-        let others: Vec<_> = other
-            .iter()
-            .filter(|diag| diag.ty != ErrorType::CastError)
-            .cloned()
-            .collect();
-        if others.is_empty() {
-            false
-        } else {
-            if !self.has_error {
-                self.has_error = others.iter().any(|m| m.level == Level::Error);
-            }
-            self.contents.extend(others);
-            true
-        }
     }
 
     pub fn append(&mut self, diagnostics: &mut Vec<Diagnostic>) {
@@ -205,7 +191,7 @@ impl Namespace {
     pub fn print_diagnostics(&self, cache: &FileResolver, debug: bool) {
         let (files, file_id) = self.convert_files(cache);
 
-        let writer = term::termcolor::StandardStream::stderr(term::termcolor::ColorChoice::Always);
+        let writer = term::termcolor::StandardStream::stderr(term::termcolor::ColorChoice::Auto);
         let config = term::Config::default();
 
         for msg in self.diagnostics.iter() {
@@ -253,8 +239,8 @@ impl Namespace {
                 sourceLocation: location,
                 ty: format!("{:?}", msg.ty),
                 component: "general".to_owned(),
-                severity: msg.level.to_string().to_owned(),
-                message: msg.message.to_owned(),
+                severity: msg.level.to_string(),
+                message: msg.message.clone(),
                 formattedMessage: buffer.into_string(),
             });
         }
@@ -272,7 +258,7 @@ impl Namespace {
         for (file_no, file) in self.files.iter().enumerate() {
             if file.cache_no.is_some() {
                 let (contents, _) = cache.get_file_contents_and_number(&file.path);
-                file_id.insert(file_no, files.add(format!("{}", file), contents.to_owned()));
+                file_id.insert(file_no, files.add(format!("{file}"), contents.to_owned()));
             }
         }
 
@@ -280,14 +266,14 @@ impl Namespace {
     }
 }
 
+#[derive(Default)]
 pub struct RawBuffer {
     buf: Vec<u8>,
 }
 
 impl RawBuffer {
-    #[allow(clippy::new_without_default)]
     pub fn new() -> RawBuffer {
-        RawBuffer { buf: Vec::new() }
+        RawBuffer::default()
     }
 
     pub fn into_string(self) -> String {

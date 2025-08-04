@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import expect from 'expect';
+import { weight, createConnection, deploy, transaction, aliceKeypair, query, debug_buffer, dry_run, } from './index';
+import { ContractPromise } from '@polkadot/api-contract';
+import { ApiPromise } from '@polkadot/api';
+
+describe('Deploy create_contract contract and test', () => {
+    let conn: ApiPromise;
+
+    before(async function () {
+        conn = await createConnection();
+    });
+
+    after(async function () {
+        await conn.disconnect();
+    });
+
+    it('create_contract', async function () {
+        this.timeout(50000);
+
+        const alice = aliceKeypair();
+
+        // call the constructors
+        let deploy_contract = await deploy(conn, alice, 'creator.contract', BigInt(1e16));
+
+        // we need to have upload the child code
+        let _ = await deploy(conn, alice, 'child_create_contract.contract', BigInt(0));
+
+        let contract = new ContractPromise(conn, deploy_contract.abi, deploy_contract.address);
+
+        let dry = await dry_run(conn, contract, "createChild");
+        // Expect the instantiation nonce to be present
+        const current_nonce = dry.debugMessage.split('\n')[2].split('=');
+        expect(current_nonce[0]).toContain("seal0::instantiation_nonce");
+
+        const gasLimit = dry.gasRequired;
+        let tx = contract.tx.createChild({ gasLimit });
+
+        await transaction(tx, alice);
+
+        let res2 = await query(conn, alice, contract, "callChild");
+
+        expect(res2.output?.toJSON()).toStrictEqual("child");
+
+        // child was created with a balance of 1e15, verify
+        res2 = await query(conn, alice, contract, "c");
+
+        let child = res2.output!.toString();
+
+        let { data: { free: childBalance } } = await conn.query.system.account(child);
+
+        expect(BigInt(1e15) - childBalance.toBigInt()).toBeLessThan(1e11);
+
+        // Expect the instantiation nonce to be present and to increase
+        const next_nonce = (await debug_buffer(conn, contract, "createChild")).split('\n')[2].split('=');
+        expect(next_nonce[0]).toContain("seal0::instantiation_nonce");
+
+        const current_nonce_value = parseInt(current_nonce[1].split('(')[1].split(')')[0]);
+        const next_nonce_value = parseInt(next_nonce[1].split('(')[1].split(')')[0]);
+        expect(current_nonce_value).toBeLessThan(next_nonce_value);
+    });
+});

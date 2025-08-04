@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::codegen::{
-    cfg::{ControlFlowGraph, Instr},
-    vartable::Vartable,
-    yul::expression::expression,
-    {Builtin, Expression, Options},
-};
-use crate::sema::ast::{Namespace, RetrieveType, Type};
-use crate::sema::{
-    diagnostics::Diagnostics,
-    expression::coerce_number,
-    yul::{ast, builtin::YulBuiltInFunction},
+use crate::{
+    codegen::{
+        cfg::{ControlFlowGraph, Instr},
+        revert::{assert_failure, log_runtime_error, PanicCode, SolidityError},
+        vartable::Vartable,
+        yul::expression::expression,
+        {Builtin, Expression, Options},
+    },
+    sema::{
+        ast::{Namespace, RetrieveType, Type},
+        diagnostics::Diagnostics,
+        expression::integers::coerce_number,
+        yul::{ast, builtin::YulBuiltInFunction},
+    },
+    Target,
 };
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Zero};
@@ -19,13 +23,17 @@ use solang_parser::pt;
 impl Expression {
     fn to_number_literal(&self) -> Expression {
         match self {
-            Expression::BoolLiteral(loc, value) => {
+            Expression::BoolLiteral { loc, value } => {
                 let val = if *value {
                     BigInt::from(1)
                 } else {
                     BigInt::from(0)
                 };
-                Expression::NumberLiteral(*loc, Type::Uint(256), val)
+                Expression::NumberLiteral {
+                    loc: *loc,
+                    ty: Type::Uint(256),
+                    value: val,
+                }
             }
             _ => panic!("expression should not be converted into number literal"),
         }
@@ -35,7 +43,7 @@ impl Expression {
 /// Transfrom YUL builtin functions into CFG instructions
 pub(crate) fn process_builtin(
     loc: &pt::Loc,
-    builtin_ty: &YulBuiltInFunction,
+    builtin_ty: YulBuiltInFunction,
     args: &[ast::YulExpression],
     contract_no: usize,
     ns: &Namespace,
@@ -46,14 +54,14 @@ pub(crate) fn process_builtin(
     match builtin_ty {
         YulBuiltInFunction::Not => {
             let exp = expression(&args[0], contract_no, ns, vartab, cfg, opt);
-            Expression::Complement(*loc, exp.ty(), Box::new(exp))
+            Expression::BitwiseNot { loc: *loc, ty: exp.ty(), expr: Box::new(exp) }
         }
 
         YulBuiltInFunction::IsZero => {
             let left = expression(&args[0], contract_no, ns, vartab, cfg, opt);
-            let right = Expression::NumberLiteral(pt::Loc::Codegen, left.ty(), BigInt::from(0));
+            let right = Expression::NumberLiteral { loc: pt::Loc::Codegen, ty: left.ty(), value: BigInt::from(0) };
 
-            Expression::Equal(*loc, Box::new(left), Box::new(right))
+            Expression::Equal { loc: *loc, left: Box::new(left), right: Box::new(right) }
         }
 
         YulBuiltInFunction::Add
@@ -74,30 +82,14 @@ pub(crate) fn process_builtin(
         | YulBuiltInFunction::Shl
         | YulBuiltInFunction::Shr
         | YulBuiltInFunction::Sar
-        | YulBuiltInFunction::Exp => {
-            process_binary_arithmetic(loc, builtin_ty, args, contract_no, ns, vartab, cfg, opt)
+        | YulBuiltInFunction::Exp
+        | YulBuiltInFunction::AddMod
+        | YulBuiltInFunction::MulMod => {
+            process_arithmetic(loc, builtin_ty, args, contract_no, ns, vartab, cfg, opt)
         }
 
         YulBuiltInFunction::Byte => {
             byte_builtin(loc, args, contract_no, ns, cfg, vartab, opt)
-        }
-
-        YulBuiltInFunction::AddMod
-        | YulBuiltInFunction::MulMod => {
-            let left = expression(&args[0], contract_no, ns, vartab, cfg, opt);
-            let right = expression(&args[1], contract_no, ns, vartab, cfg, opt);
-            let (left, right) = equalize_types(left, right, ns);
-
-            let main_expr = if matches!(builtin_ty, YulBuiltInFunction::AddMod) {
-                Expression::Add(*loc, left.ty(), false, Box::new(left), Box::new(right))
-            } else {
-                Expression::Multiply(*loc, left.ty(), false, Box::new(left), Box::new(right))
-            };
-
-            let mod_arg = expression(&args[2], contract_no, ns, vartab, cfg, opt);
-            let (mod_left, mod_right) = equalize_types(main_expr, mod_arg, ns);
-            let codegen_expr = Expression::UnsignedModulo(*loc, mod_left.ty(), Box::new(mod_left), Box::new(mod_right.clone()));
-            branch_if_zero(mod_right, codegen_expr, cfg, vartab)
         }
 
         YulBuiltInFunction::SignExtend
@@ -145,35 +137,55 @@ pub(crate) fn process_builtin(
         | YulBuiltInFunction::Log4
         // origin is the same as tx.origin and is not implemented
         | YulBuiltInFunction::Origin
+        | YulBuiltInFunction::PrevRandao
         => {
-            let function_ty = builtin_ty.get_prototype_info();
-            unreachable!("{} yul builtin not implemented", function_ty.name);
+            if ns.target != Target::EVM {
+                let function_ty = builtin_ty.get_prototype_info();
+                unreachable!("{} yul builtin not implemented", function_ty.name);
+            }
+
+            // Sema will only allow this for EVM. This is a placeholder until correct codegen is in place
+            cfg.add(vartab, Instr::Unimplemented { reachable: !matches!(builtin_ty, YulBuiltInFunction::Return | YulBuiltInFunction::Revert | YulBuiltInFunction::Stop) });
+            Expression::Poison
         }
 
         YulBuiltInFunction::Gas => {
-            Expression::Builtin(*loc, vec![Type::Uint(64)], Builtin::Gasleft, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(64)], kind: Builtin::Gasleft, args: vec![] }
         }
 
         YulBuiltInFunction::Address => {
-            Expression::Builtin(*loc, vec![Type::Address(false)], Builtin::GetAddress, vec![])
+            let address_fetch = Expression::Builtin { loc: *loc, tys: vec![
+                Type::Ref(Box::new(Type::Address(false)))], kind: Builtin::GetAddress, args: vec![] };
+            Expression::Load {
+                loc: *loc,
+                ty: Type::Address(false),
+                expr: Box::new(address_fetch),
+            }
         }
 
         YulBuiltInFunction::Balance => {
             let addr = expression(&args[0], contract_no, ns, vartab, cfg, opt).cast(&Type::Address(false), ns);
-            Expression::Builtin(*loc, vec![Type::Value], Builtin::Balance,vec![addr])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Value], kind: Builtin::Balance, args: vec![addr] }
         }
 
         YulBuiltInFunction::SelfBalance => {
-            let addr = Expression::Builtin(*loc, vec![Type::Contract(contract_no)], Builtin::GetAddress,vec![]);
-            Expression::Builtin(*loc, vec![Type::Value], Builtin::Balance, vec![addr])
+            let address_fetch = Expression::Builtin { loc: *loc, tys: vec![
+                Type::Ref(Box::new(Type::Contract(contract_no))),
+            ], kind: Builtin::GetAddress, args: vec![] };
+            let addr = Expression::Load {
+                loc: *loc,
+                ty: Type::Contract(contract_no),
+                expr: Box::new(address_fetch),
+            };
+            Expression::Builtin { loc: *loc, tys: vec![Type::Value], kind: Builtin::Balance, args: vec![addr] }
         }
 
         YulBuiltInFunction::Caller => {
-            Expression::Builtin(*loc, vec![Type::Address(true)], Builtin::Sender, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Address(true)], kind: Builtin::Sender, args: vec![] }
         }
 
         YulBuiltInFunction::CallValue => {
-            Expression::Builtin(*loc, vec![Type::Value], Builtin::Value, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Value], kind: Builtin::Value, args: vec![] }
         }
 
         YulBuiltInFunction::SelfDestruct => {
@@ -183,50 +195,53 @@ pub(crate) fn process_builtin(
         }
 
         YulBuiltInFunction::Invalid => {
-            cfg.add(vartab, Instr::AssertFailure { expr: None });
+            log_runtime_error(opt.log_runtime_errors,  "reached invalid instruction", *loc, cfg,
+            vartab,
+            ns);
+            assert_failure(loc, SolidityError::Panic(PanicCode::Generic), ns, cfg, vartab);
             Expression::Poison
         }
 
         YulBuiltInFunction::GasPrice => {
-            Expression::Builtin(*loc, vec![Type::Uint(64)], Builtin::Gasprice, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(64)], kind: Builtin::Gasprice, args: vec![] }
         }
 
         YulBuiltInFunction::ExtCodeSize => {
             let address = expression(&args[0], contract_no, ns, vartab, cfg, opt).cast(&Type::Address(false), ns);
-            Expression::Builtin(*loc, vec![Type::Uint(32)], Builtin::ExtCodeSize, vec![address])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(32)], kind: Builtin::ExtCodeSize, args: vec![address] }
         }
 
         YulBuiltInFunction::BlockHash => {
             let arg = expression(&args[0], contract_no, ns, vartab, cfg, opt).cast(&Type::Uint(64), ns);
-            Expression::Builtin(*loc, vec![Type::Uint(256)], Builtin::BlockHash, vec![arg])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(256)], kind: Builtin::BlockHash, args: vec![arg] }
         }
 
         YulBuiltInFunction::CoinBase => {
-            Expression::Builtin(*loc, vec![Type::Address(false)], Builtin::BlockCoinbase, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Address(false)], kind: Builtin::BlockCoinbase, args: vec![] }
         }
 
         YulBuiltInFunction::Timestamp => {
-            Expression::Builtin(*loc, vec![Type::Uint(64)], Builtin::Timestamp, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(64)], kind: Builtin::Timestamp, args: vec![] }
         }
 
         YulBuiltInFunction::Number => {
-            Expression::Builtin(*loc, vec![Type::Uint(64)], Builtin::BlockNumber, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(64)], kind: Builtin::BlockNumber, args: vec![] }
         }
 
         YulBuiltInFunction::Difficulty => {
-            Expression::Builtin(*loc, vec![Type::Uint(256)], Builtin::BlockDifficulty, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(256)], kind: Builtin::BlockDifficulty, args: vec![] }
         }
 
         YulBuiltInFunction::GasLimit => {
-            Expression::Builtin(*loc, vec![Type::Uint(64)], Builtin::GasLimit, vec![])
+            Expression::Builtin { loc: *loc, tys: vec![Type::Uint(64)], kind: Builtin::GasLimit, args: vec![] }
         }
     }
 }
 
-/// Process arithmetic operations with two arguments
-fn process_binary_arithmetic(
+/// Process arithmetic operations
+fn process_arithmetic(
     loc: &pt::Loc,
-    builtin_ty: &YulBuiltInFunction,
+    builtin_ty: YulBuiltInFunction,
     args: &[ast::YulExpression],
     contract_no: usize,
     ns: &Namespace,
@@ -236,75 +251,186 @@ fn process_binary_arithmetic(
 ) -> Expression {
     let left = expression(&args[0], contract_no, ns, vartab, cfg, opt);
     let right = expression(&args[1], contract_no, ns, vartab, cfg, opt);
+
+    let left = cast_to_number(left, ns);
+    let right = cast_to_number(right, ns);
+
     let (left, right) = equalize_types(left, right, ns);
 
     match builtin_ty {
-        YulBuiltInFunction::Add => {
-            Expression::Add(*loc, left.ty(), true, Box::new(left), Box::new(right))
-        }
-        YulBuiltInFunction::Sub => {
-            Expression::Subtract(*loc, left.ty(), true, Box::new(left), Box::new(right))
-        }
-        YulBuiltInFunction::Mul => {
-            Expression::Multiply(*loc, left.ty(), true, Box::new(left), Box::new(right))
-        }
+        YulBuiltInFunction::Add => Expression::Add {
+            loc: *loc,
+            ty: left.ty(),
+            overflowing: true,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Sub => Expression::Subtract {
+            loc: *loc,
+            ty: left.ty(),
+            overflowing: true,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Mul => Expression::Multiply {
+            loc: *loc,
+            ty: left.ty(),
+            overflowing: true,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
         YulBuiltInFunction::Div => {
-            let expr = Expression::UnsignedDivide(
-                *loc,
-                left.ty(),
-                Box::new(left),
-                Box::new(right.clone()),
-            );
+            let expr = Expression::UnsignedDivide {
+                loc: *loc,
+                ty: left.ty(),
+                left: Box::new(left),
+                right: Box::new(right.clone()),
+            };
             branch_if_zero(right, expr, cfg, vartab)
         }
         YulBuiltInFunction::SDiv => {
-            let expr =
-                Expression::SignedDivide(*loc, left.ty(), Box::new(left), Box::new(right.clone()));
+            let expr = Expression::SignedDivide {
+                loc: *loc,
+                ty: left.ty(),
+                left: Box::new(left),
+                right: Box::new(right.clone()),
+            };
             branch_if_zero(right, expr, cfg, vartab)
         }
         YulBuiltInFunction::Mod => {
-            let expr = Expression::UnsignedModulo(
-                *loc,
-                left.ty(),
-                Box::new(left),
-                Box::new(right.clone()),
-            );
+            let expr = Expression::UnsignedModulo {
+                loc: *loc,
+                ty: left.ty(),
+                left: Box::new(left),
+                right: Box::new(right.clone()),
+            };
             branch_if_zero(right, expr, cfg, vartab)
         }
         YulBuiltInFunction::SMod => {
-            let expr =
-                Expression::SignedModulo(*loc, left.ty(), Box::new(left), Box::new(right.clone()));
+            let expr = Expression::SignedModulo {
+                loc: *loc,
+                ty: left.ty(),
+                left: Box::new(left),
+                right: Box::new(right.clone()),
+            };
             branch_if_zero(right, expr, cfg, vartab)
         }
-        YulBuiltInFunction::Exp => {
-            Expression::Power(*loc, left.ty(), true, Box::new(left), Box::new(right))
-        }
-        YulBuiltInFunction::Lt => Expression::UnsignedLess(*loc, Box::new(left), Box::new(right)),
-        YulBuiltInFunction::Gt => Expression::UnsignedMore(*loc, Box::new(left), Box::new(right)),
-        YulBuiltInFunction::Slt => Expression::SignedLess(*loc, Box::new(left), Box::new(right)),
-        YulBuiltInFunction::Sgt => Expression::SignedMore(*loc, Box::new(left), Box::new(right)),
-        YulBuiltInFunction::Eq => Expression::Equal(*loc, Box::new(left), Box::new(right)),
-        YulBuiltInFunction::And => {
-            Expression::BitwiseAnd(*loc, left.ty(), Box::new(left), Box::new(right))
-        }
-        YulBuiltInFunction::Or => {
-            Expression::BitwiseOr(*loc, left.ty(), Box::new(left), Box::new(right))
-        }
-        YulBuiltInFunction::Xor => {
-            Expression::BitwiseXor(*loc, left.ty(), Box::new(left), Box::new(right))
-        }
+        YulBuiltInFunction::Exp => Expression::Power {
+            loc: *loc,
+            ty: left.ty(),
+            overflowing: true,
+            base: Box::new(left),
+            exp: Box::new(right),
+        },
+        YulBuiltInFunction::Lt => Expression::Less {
+            loc: *loc,
+            signed: false,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Gt => Expression::More {
+            loc: *loc,
+            signed: false,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Slt => Expression::Less {
+            loc: *loc,
+            signed: true,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Sgt => Expression::More {
+            loc: *loc,
+            signed: true,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Eq => Expression::Equal {
+            loc: *loc,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::And => Expression::BitwiseAnd {
+            loc: *loc,
+            ty: left.ty(),
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Or => Expression::BitwiseOr {
+            loc: *loc,
+            ty: left.ty(),
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        YulBuiltInFunction::Xor => Expression::BitwiseXor {
+            loc: *loc,
+            ty: left.ty(),
+            left: Box::new(left),
+            right: Box::new(right),
+        },
         // For bit shifting, the syntax is the following: shr(x, y) shifts right y by x bits.
-        YulBuiltInFunction::Shl => {
-            Expression::ShiftLeft(*loc, left.ty(), Box::new(right), Box::new(left))
-        }
-        YulBuiltInFunction::Shr => {
-            Expression::ShiftRight(*loc, left.ty(), Box::new(right), Box::new(left), false)
-        }
-        YulBuiltInFunction::Sar => {
-            Expression::ShiftRight(*loc, left.ty(), Box::new(right), Box::new(left), true)
+        YulBuiltInFunction::Shl => Expression::ShiftLeft {
+            loc: *loc,
+            ty: left.ty(),
+            left: Box::new(right),
+            right: Box::new(left),
+        },
+        YulBuiltInFunction::Shr => Expression::ShiftRight {
+            loc: *loc,
+            ty: left.ty(),
+            left: Box::new(right),
+            right: Box::new(left),
+            signed: false,
+        },
+        YulBuiltInFunction::Sar => Expression::ShiftRight {
+            loc: *loc,
+            ty: left.ty(),
+            left: Box::new(right),
+            right: Box::new(left),
+            signed: true,
+        },
+
+        YulBuiltInFunction::AddMod | YulBuiltInFunction::MulMod => {
+            let modulo_operand = expression(&args[2], contract_no, ns, vartab, cfg, opt);
+            let (_, equalized_modulo) = equalize_types(left.clone(), modulo_operand.clone(), ns);
+            let builtin = if builtin_ty == YulBuiltInFunction::AddMod {
+                Builtin::AddMod
+            } else {
+                Builtin::MulMod
+            };
+            let codegen_expr = Expression::Builtin {
+                loc: *loc,
+                tys: vec![left.ty()],
+                kind: builtin,
+                args: vec![right, left, equalized_modulo],
+            };
+            branch_if_zero(modulo_operand, codegen_expr, cfg, vartab)
         }
 
         _ => panic!("This is not a binary arithmetic operation!"),
+    }
+}
+
+/// Arithmetic operations work on numbers, so addresses and pointers need to be
+/// converted to integers
+fn cast_to_number(expr: Expression, ns: &Namespace) -> Expression {
+    let ty = expr.ty();
+
+    if !ty.is_contract_storage() && ty.is_reference_type(ns) {
+        Expression::Cast {
+            loc: pt::Loc::Codegen,
+            ty: Type::Uint(ns.target.ptr_size()),
+            expr: expr.into(),
+        }
+    } else if ty.is_address() {
+        Expression::Cast {
+            loc: pt::Loc::Codegen,
+            ty: Type::Uint((ns.address_length * 8) as u16),
+            expr: expr.into(),
+        }
+    } else {
+        expr
     }
 }
 
@@ -316,14 +442,14 @@ fn equalize_types(
 ) -> (Expression, Expression) {
     if matches!(
         left,
-        Expression::BytesLiteral(..) | Expression::BoolLiteral(..)
+        Expression::BytesLiteral { .. } | Expression::BoolLiteral { .. }
     ) {
         left = left.to_number_literal();
     }
 
     if matches!(
         right,
-        Expression::BytesLiteral(..) | Expression::BoolLiteral(..)
+        Expression::BytesLiteral { .. } | Expression::BoolLiteral { .. }
     ) {
         right = right.to_number_literal();
     }
@@ -360,15 +486,15 @@ fn branch_if_zero(
     vartab: &mut Vartable,
 ) -> Expression {
     let temp = vartab.temp_anonymous(&Type::Uint(256));
-    let cond = Expression::Equal(
-        pt::Loc::Codegen,
-        Box::new(variable.clone()),
-        Box::new(Expression::NumberLiteral(
-            pt::Loc::Codegen,
-            variable.ty(),
-            BigInt::zero(),
-        )),
-    );
+    let cond = Expression::Equal {
+        loc: pt::Loc::Codegen,
+        left: Box::new(variable.clone()),
+        right: Box::new(Expression::NumberLiteral {
+            loc: pt::Loc::Codegen,
+            ty: variable.ty(),
+            value: BigInt::zero(),
+        }),
+    };
 
     let then = cfg.new_basic_block("then".to_string());
     let else_ = cfg.new_basic_block("else".to_string());
@@ -389,7 +515,11 @@ fn branch_if_zero(
         Instr::Set {
             loc: pt::Loc::Codegen,
             res: temp,
-            expr: Expression::NumberLiteral(pt::Loc::Codegen, Type::Uint(256), BigInt::from(0)),
+            expr: Expression::NumberLiteral {
+                loc: pt::Loc::Codegen,
+                ty: Type::Uint(256),
+                value: BigInt::from(0),
+            },
         },
     );
     cfg.add(vartab, Instr::Branch { block: endif });
@@ -407,7 +537,11 @@ fn branch_if_zero(
     cfg.set_phis(endif, vartab.pop_dirty_tracker());
     cfg.set_basic_block(endif);
 
-    Expression::Variable(pt::Loc::Codegen, Type::Uint(256), temp)
+    Expression::Variable {
+        loc: pt::Loc::Codegen,
+        ty: Type::Uint(256),
+        var_no: temp,
+    }
 }
 
 /// This function implements the byte builtin
@@ -421,15 +555,16 @@ fn byte_builtin(
     opt: &Options,
 ) -> Expression {
     let offset = expression(&args[0], contract_no, ns, vartab, cfg, opt).cast(&Type::Uint(256), ns);
-    let cond = Expression::MoreEqual(
-        *loc,
-        Box::new(offset.clone()),
-        Box::new(Expression::NumberLiteral(
-            *loc,
-            Type::Uint(256),
-            BigInt::from(32),
-        )),
-    );
+    let cond = Expression::MoreEqual {
+        loc: *loc,
+        signed: false,
+        left: Box::new(offset.clone()),
+        right: Box::new(Expression::NumberLiteral {
+            loc: *loc,
+            ty: Type::Uint(256),
+            value: BigInt::from(32),
+        }),
+    };
 
     let temp = vartab.temp_anonymous(&Type::Uint(256));
 
@@ -453,7 +588,11 @@ fn byte_builtin(
         Instr::Set {
             loc: pt::Loc::Codegen,
             res: temp,
-            expr: Expression::NumberLiteral(pt::Loc::Codegen, Type::Uint(256), BigInt::zero()),
+            expr: Expression::NumberLiteral {
+                loc: pt::Loc::Codegen,
+                ty: Type::Uint(256),
+                value: BigInt::zero(),
+            },
         },
     );
     cfg.add(vartab, Instr::Branch { block: endif });
@@ -461,46 +600,46 @@ fn byte_builtin(
     cfg.set_basic_block(else_);
 
     // The following implements the operation (arg[1] >> (8 * (31 - arg[0]))) & 0xff
-    let op_31_sub_arg0 = Expression::Subtract(
-        *loc,
-        Type::Uint(256),
-        false,
-        Box::new(Expression::NumberLiteral(
-            *loc,
-            Type::Uint(256),
-            BigInt::from(31),
-        )),
-        Box::new(offset),
-    );
-    let op_eight_times = Expression::ShiftLeft(
-        *loc,
-        Type::Uint(256),
-        Box::new(op_31_sub_arg0),
-        Box::new(Expression::NumberLiteral(
-            *loc,
-            Type::Uint(256),
-            BigInt::from(3),
-        )),
-    );
-    let op_shift_right = Expression::ShiftRight(
-        *loc,
-        Type::Uint(256),
-        Box::new(
+    let op_31_sub_arg0 = Expression::Subtract {
+        loc: *loc,
+        ty: Type::Uint(256),
+        overflowing: false,
+        left: Box::new(Expression::NumberLiteral {
+            loc: *loc,
+            ty: Type::Uint(256),
+            value: BigInt::from(31),
+        }),
+        right: Box::new(offset),
+    };
+    let op_eight_times = Expression::ShiftLeft {
+        loc: *loc,
+        ty: Type::Uint(256),
+        left: Box::new(op_31_sub_arg0),
+        right: Box::new(Expression::NumberLiteral {
+            loc: *loc,
+            ty: Type::Uint(256),
+            value: BigInt::from(3),
+        }),
+    };
+    let op_shift_right = Expression::ShiftRight {
+        loc: *loc,
+        ty: Type::Uint(256),
+        left: Box::new(
             expression(&args[1], contract_no, ns, vartab, cfg, opt).cast(&Type::Uint(256), ns),
         ),
-        Box::new(op_eight_times),
-        false,
-    );
-    let masked_result = Expression::BitwiseAnd(
-        *loc,
-        Type::Uint(256),
-        Box::new(op_shift_right),
-        Box::new(Expression::NumberLiteral(
-            *loc,
-            Type::Uint(256),
-            BigInt::from_u8(255).unwrap(),
-        )),
-    );
+        right: Box::new(op_eight_times),
+        signed: false,
+    };
+    let masked_result = Expression::BitwiseAnd {
+        loc: *loc,
+        ty: Type::Uint(256),
+        left: Box::new(op_shift_right),
+        right: Box::new(Expression::NumberLiteral {
+            loc: *loc,
+            ty: Type::Uint(256),
+            value: BigInt::from_u8(255).unwrap(),
+        }),
+    };
 
     cfg.add(
         vartab,
@@ -515,5 +654,9 @@ fn byte_builtin(
     cfg.set_phis(endif, vartab.pop_dirty_tracker());
     cfg.set_basic_block(endif);
 
-    Expression::Variable(pt::Loc::Codegen, Type::Uint(256), temp)
+    Expression::Variable {
+        loc: pt::Loc::Codegen,
+        ty: Type::Uint(256),
+        var_no: temp,
+    }
 }

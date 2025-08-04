@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::sema::ast::{Builtin, CallArgs, Diagnostic, EventDecl, Expression, Namespace};
+use crate::sema::ast::{
+    Builtin, CallArgs, Diagnostic, EventDecl, Expression, ExternalCallAccounts, Namespace,
+    RetrieveType,
+};
 use crate::sema::symtable::{Symtable, VariableUsage};
 use crate::sema::{ast, symtable};
 use solang_parser::pt::{ContractTy, Loc};
@@ -9,33 +12,84 @@ use solang_parser::pt::{ContractTy, Loc};
 /// Namespace (for storage variables)
 pub fn assigned_variable(ns: &mut Namespace, exp: &Expression, symtable: &mut Symtable) {
     match &exp {
-        Expression::StorageVariable(_, _, contract_no, offset) => {
-            ns.contracts[*contract_no].variables[*offset].assigned = true;
+        Expression::StorageVariable {
+            contract_no,
+            var_no,
+            ..
+        } => {
+            ns.contracts[*contract_no].variables[*var_no].assigned = true;
         }
 
-        Expression::Variable(_, _, offset) => {
-            let var = symtable.vars.get_mut(offset).unwrap();
+        Expression::Variable { var_no, .. } => {
+            let var = symtable.vars.get_mut(var_no).unwrap();
             var.assigned = true;
         }
 
-        Expression::StructMember(_, _, str, _) => {
-            assigned_variable(ns, str, symtable);
+        Expression::StructMember { expr, .. } => {
+            assigned_variable(ns, expr, symtable);
         }
 
-        Expression::Subscript(_, _, _, array, index) => {
-            assigned_variable(ns, array, symtable);
+        Expression::Subscript { array, index, .. } => {
+            if array.ty().is_contract_storage() {
+                subscript_variable(ns, array, symtable);
+            } else {
+                assigned_variable(ns, array, symtable);
+            }
             used_variable(ns, index, symtable);
         }
 
-        Expression::StorageLoad(_, _, expr)
-        | Expression::Load(_, _, expr)
-        | Expression::Trunc(_, _, expr)
-        | Expression::Cast(_, _, expr)
-        | Expression::BytesCast(_, _, _, expr) => {
+        Expression::StorageLoad { expr, .. }
+        | Expression::Load { expr, .. }
+        | Expression::Trunc { expr, .. }
+        | Expression::Cast { expr, .. }
+        | Expression::BytesCast { expr, .. } => {
             assigned_variable(ns, expr, symtable);
         }
 
         _ => {}
+    }
+}
+
+// We have two cases here
+//  contract c {
+//      int[2] case1;
+//
+//      function f(int[2] storage case2) {
+//          case1[0] = 1;
+//          case2[0] = 1;
+//      }
+//  }
+//  The subscript for case1 is an assignment
+//  The subscript for case2 is a read
+fn subscript_variable(ns: &mut Namespace, exp: &Expression, symtable: &mut Symtable) {
+    match &exp {
+        Expression::StorageVariable {
+            contract_no,
+            var_no,
+            ..
+        } => {
+            ns.contracts[*contract_no].variables[*var_no].assigned = true;
+        }
+
+        Expression::Variable { var_no, .. } => {
+            let var = symtable.vars.get_mut(var_no).unwrap();
+            var.read = true;
+        }
+
+        Expression::StructMember { expr, .. } => {
+            subscript_variable(ns, expr, symtable);
+        }
+
+        Expression::Subscript { array, index, .. } => {
+            subscript_variable(ns, array, symtable);
+            subscript_variable(ns, index, symtable);
+        }
+
+        Expression::InternalFunctionCall { .. } | Expression::ExternalFunctionCall { .. } => {
+            check_function_call(ns, exp, symtable);
+        }
+
+        _ => (),
     }
 }
 
@@ -45,61 +99,82 @@ pub fn assigned_variable(ns: &mut Namespace, exp: &Expression, symtable: &mut Sy
 /// assign expressions and array subscripts.
 pub fn used_variable(ns: &mut Namespace, exp: &Expression, symtable: &mut Symtable) {
     match &exp {
-        Expression::StorageVariable(_, _, contract_no, offset) => {
-            ns.contracts[*contract_no].variables[*offset].read = true;
+        Expression::StorageVariable {
+            contract_no,
+            var_no,
+            ..
+        } => {
+            ns.contracts[*contract_no].variables[*var_no].read = true;
         }
 
-        Expression::Variable(_, _, offset) => {
-            let var = symtable.vars.get_mut(offset).unwrap();
+        Expression::Variable { var_no, .. } => {
+            let var = symtable.vars.get_mut(var_no).unwrap();
             var.read = true;
         }
 
-        Expression::ConstantVariable(_, _, Some(contract_no), offset) => {
-            ns.contracts[*contract_no].variables[*offset].read = true;
+        Expression::ConstantVariable {
+            contract_no: Some(contract_no),
+            var_no,
+            ..
+        } => {
+            ns.contracts[*contract_no].variables[*var_no].read = true;
         }
 
-        Expression::ConstantVariable(_, _, None, offset) => {
-            ns.constants[*offset].read = true;
+        Expression::ConstantVariable {
+            contract_no: None,
+            var_no,
+            ..
+        } => {
+            ns.constants[*var_no].read = true;
         }
 
-        Expression::StructMember(_, _, str, _) => {
-            used_variable(ns, str, symtable);
+        Expression::StructMember { expr, .. } => {
+            used_variable(ns, expr, symtable);
         }
 
-        Expression::Subscript(_, _, _, array, index) => {
+        Expression::Subscript { array, index, .. } => {
             used_variable(ns, array, symtable);
             used_variable(ns, index, symtable);
         }
 
-        Expression::Builtin(_, _, Builtin::ArrayLength, args) => {
-            //We should not eliminate an array from the code when 'length' is called
-            //So the variable is also assigned
-            assigned_variable(ns, &args[0], symtable);
-            used_variable(ns, &args[0], symtable);
-        }
-        Expression::StorageArrayLength {
-            loc: _,
-            ty: _,
-            array,
+        Expression::Builtin {
+            kind: Builtin::ArrayLength,
+            args,
             ..
         } => {
-            //We should not eliminate an array from the code when 'length' is called
-            //So the variable is also assigned
+            used_variable(ns, &args[0], symtable);
+        }
+
+        Expression::Builtin {
+            kind: Builtin::ArrayPush | Builtin::ArrayPop,
+            args,
+            ..
+        } => {
+            // Array push and pop return values, so they are both read and assigned.
+            used_variable(ns, &args[0], symtable);
+            assigned_variable(ns, &args[0], symtable);
+        }
+
+        Expression::StorageArrayLength { array, .. } => {
+            // We should not eliminate an array from the code when 'length' is called
+            // So the variable is also assigned
             assigned_variable(ns, array, symtable);
             used_variable(ns, array, symtable);
         }
 
-        Expression::StorageLoad(_, _, expr)
-        | Expression::Load(_, _, expr)
-        | Expression::SignExt(_, _, expr)
-        | Expression::ZeroExt(_, _, expr)
-        | Expression::Trunc(_, _, expr)
-        | Expression::Cast(_, _, expr)
-        | Expression::BytesCast(_, _, _, expr) => {
+        Expression::StorageLoad { expr, .. }
+        | Expression::Load { expr, .. }
+        | Expression::SignExt { expr, .. }
+        | Expression::ZeroExt { expr, .. }
+        | Expression::Trunc { expr, .. }
+        | Expression::Cast { expr, .. }
+        | Expression::BytesCast { expr, .. } => {
             used_variable(ns, expr, symtable);
         }
 
-        Expression::InternalFunctionCall { .. } | Expression::ExternalFunctionCall { .. } => {
+        Expression::ExternalFunction { .. }
+        | Expression::InternalFunctionCall { .. }
+        | Expression::ExternalFunctionCall { .. } => {
             check_function_call(ns, exp, symtable);
         }
 
@@ -111,16 +186,11 @@ pub fn used_variable(ns: &mut Namespace, exp: &Expression, symtable: &mut Symtab
 /// usage of the latter as well
 pub fn check_function_call(ns: &mut Namespace, exp: &Expression, symtable: &mut Symtable) {
     match &exp {
-        Expression::Load(..) | Expression::StorageLoad(..) | Expression::Variable(..) => {
+        Expression::Load { .. } | Expression::StorageLoad { .. } | Expression::Variable { .. } => {
             used_variable(ns, exp, symtable);
         }
 
-        Expression::InternalFunctionCall {
-            loc: _,
-            returns: _,
-            function,
-            args,
-        } => {
+        Expression::InternalFunctionCall { function, args, .. } => {
             for arg in args {
                 used_variable(ns, arg, symtable);
             }
@@ -128,11 +198,10 @@ pub fn check_function_call(ns: &mut Namespace, exp: &Expression, symtable: &mut 
         }
 
         Expression::ExternalFunctionCall {
-            loc: _,
-            returns: _,
             function,
             args,
             call_args,
+            ..
         } => {
             for arg in args {
                 used_variable(ns, arg, symtable);
@@ -142,11 +211,7 @@ pub fn check_function_call(ns: &mut Namespace, exp: &Expression, symtable: &mut 
         }
 
         Expression::Constructor {
-            loc: _,
-            contract_no: _,
-            constructor_no: _,
-            args,
-            call_args,
+            args, call_args, ..
         } => {
             for arg in args {
                 used_variable(ns, arg, symtable);
@@ -155,11 +220,10 @@ pub fn check_function_call(ns: &mut Namespace, exp: &Expression, symtable: &mut 
         }
 
         Expression::ExternalFunctionCallRaw {
-            loc: _,
-            ty: _,
             address,
             args,
             call_args,
+            ..
         } => {
             used_variable(ns, args, symtable);
             used_variable(ns, address, symtable);
@@ -170,8 +234,12 @@ pub fn check_function_call(ns: &mut Namespace, exp: &Expression, symtable: &mut 
             used_variable(ns, address, symtable);
         }
 
-        Expression::Builtin(_, _, expr_type, args) => match expr_type {
-            Builtin::ArrayPush => {
+        Expression::Builtin {
+            kind: expr_type,
+            args,
+            ..
+        } => match expr_type {
+            Builtin::ArrayPush | Builtin::ArrayPop => {
                 assigned_variable(ns, &args[0], symtable);
                 if args.len() > 1 {
                     used_variable(ns, &args[1], symtable);
@@ -185,12 +253,11 @@ pub fn check_function_call(ns: &mut Namespace, exp: &Expression, symtable: &mut 
             }
         },
 
-        Expression::FormatString(_, args) => {
-            for (_, expr) in args {
+        Expression::FormatString { format, .. } => {
+            for (_, expr) in format {
                 used_variable(ns, expr, symtable);
             }
         }
-
         _ => {}
     }
 }
@@ -206,11 +273,17 @@ fn check_call_args(ns: &mut Namespace, call_args: &CallArgs, symtable: &mut Symt
     if let Some(value) = &call_args.value {
         used_variable(ns, value.as_ref(), symtable);
     }
-    if let Some(space) = &call_args.space {
-        used_variable(ns, space.as_ref(), symtable);
-    }
-    if let Some(accounts) = &call_args.accounts {
+    if let ExternalCallAccounts::Present(accounts) = &call_args.accounts {
         used_variable(ns, accounts.as_ref(), symtable);
+    }
+    if let Some(seeds) = &call_args.seeds {
+        used_variable(ns, seeds.as_ref(), symtable);
+    }
+    if let Some(flags) = &call_args.flags {
+        used_variable(ns, flags.as_ref(), symtable);
+    }
+    if let Some(program_id) = &call_args.program_id {
+        used_variable(ns, program_id.as_ref(), symtable);
     }
 }
 
@@ -226,16 +299,18 @@ pub fn check_var_usage_expression(
 }
 
 /// Emit different warning types according to the function variable usage
-pub fn emit_warning_local_variable(variable: &symtable::Variable) -> Option<Diagnostic> {
+pub fn emit_warning_local_variable(
+    variable: &symtable::Variable,
+    ns: &Namespace,
+) -> Option<Diagnostic> {
     match &variable.usage_type {
         VariableUsage::Parameter => {
-            if !variable.read {
+            if (!variable.read && !variable.ty.is_reference_type(ns))
+                || (!variable.read && !variable.assigned && variable.ty.is_reference_type(ns))
+            {
                 return Some(Diagnostic::warning(
                     variable.id.loc,
-                    format!(
-                        "function parameter '{}' has never been read",
-                        variable.id.name
-                    ),
+                    format!("function parameter '{}' is unused", variable.id.name),
                 ));
             }
             None
@@ -243,28 +318,35 @@ pub fn emit_warning_local_variable(variable: &symtable::Variable) -> Option<Diag
 
         VariableUsage::ReturnVariable => {
             if !variable.assigned {
-                return Some(Diagnostic::warning(
-                    variable.id.loc,
-                    format!(
-                        "return variable '{}' has never been assigned",
-                        variable.id.name
-                    ),
-                ));
+                if variable.ty.is_contract_storage() {
+                    return Some(Diagnostic::error(
+                        variable.id.loc,
+                        format!(
+                            "storage reference '{}' must be assigned a value",
+                            variable.id.name
+                        ),
+                    ));
+                } else {
+                    return Some(Diagnostic::warning(
+                        variable.id.loc,
+                        format!(
+                            "return variable '{}' has never been assigned",
+                            variable.id.name
+                        ),
+                    ));
+                }
             }
             None
         }
 
         VariableUsage::LocalVariable => {
             let assigned = variable.initializer.has_initializer() || variable.assigned;
-            if !assigned && !variable.read {
+            if !variable.assigned && !variable.read {
                 return Some(Diagnostic::warning(
                     variable.id.loc,
-                    format!(
-                        "local variable '{}' has never been read nor assigned",
-                        variable.id.name
-                    ),
+                    format!("local variable '{}' is unused", variable.id.name),
                 ));
-            } else if assigned && !variable.read && !variable.is_reference() {
+            } else if assigned && !variable.read && !variable.is_reference(ns) {
                 // Values assigned to variables that reference others change the value of its reference
                 // No warning needed in this case
                 return Some(Diagnostic::warning(
@@ -434,7 +516,7 @@ pub fn check_unused_events(ns: &mut Namespace) {
             // is there a global event with the same name
             if let Some(ast::Symbol::Event(events)) =
                 ns.variable_symbols
-                    .get(&(event.loc.file_no(), None, event.name.to_owned()))
+                    .get(&(event.loc.file_no(), None, event.id.name.to_owned()))
             {
                 shadowing_events(event_no, event, &mut shadows, events, ns);
             }
@@ -443,10 +525,11 @@ pub fn check_unused_events(ns: &mut Namespace) {
             for base_no in ns.contract_bases(contract_no) {
                 let base_file_no = ns.contracts[base_no].loc.file_no();
 
-                if let Some(ast::Symbol::Event(events)) =
-                    ns.variable_symbols
-                        .get(&(base_file_no, Some(base_no), event.name.to_owned()))
-                {
+                if let Some(ast::Symbol::Event(events)) = ns.variable_symbols.get(&(
+                    base_file_no,
+                    Some(base_no),
+                    event.id.name.to_owned(),
+                )) {
                     shadowing_events(event_no, event, &mut shadows, events, ns);
                 }
             }
@@ -470,8 +553,48 @@ pub fn check_unused_events(ns: &mut Namespace) {
             }
 
             ns.diagnostics.push(Diagnostic::warning(
-                event.loc,
-                format!("event '{}' has never been emitted", event.name),
+                event.id.loc,
+                format!("event '{}' has never been emitted", event.id),
+            ));
+        }
+    }
+}
+
+/// Check for unused error definitions. Here NotEnoughBalance is never used in a
+/// revert statement.
+///
+/// ```ignore
+/// contract c {
+///     error NotEnoughBalance(address user);
+///     error UnknownUser(address user);
+///
+///     mapping(address => uint64) balances;
+///
+///     function balance(address user) public returns (uint64 balance) {
+///         balance = balances[user];
+///         if (balance == 0) {
+///             revert UnknownUser(user);
+///         }
+///     }
+/// }
+/// ```
+pub fn check_unused_errors(ns: &mut Namespace) {
+    // it is an error to shadow error definitions
+    for error in &ns.errors {
+        if !error.used {
+            if let Some(contract_no) = error.contract {
+                // don't complain about error definitions in interfaces or abstract contracts
+                if matches!(
+                    ns.contracts[contract_no].ty,
+                    ContractTy::Interface(_) | ContractTy::Abstract(_)
+                ) {
+                    continue;
+                }
+            }
+
+            ns.diagnostics.push(Diagnostic::warning(
+                error.loc,
+                format!("error '{}' has never been used", error.name),
             ));
         }
     }

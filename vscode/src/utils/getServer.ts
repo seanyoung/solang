@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fs } from 'fs';
@@ -22,14 +24,12 @@ export default async function getServer(context: vscode.ExtensionContext): Promi
     return undefined;
   }
 
-  const local = config.get('forceSolangExecutable');
-  if (typeof local == 'string' && local) {
-    const ourVersion = executableVersion(local);
+  const local = 'solang';
+  const localVersion = executableVersion(local);
 
-    if (ourVersion) {
-      console.log("Local Solang version: " + ourVersion);
-      return local;
-    }
+  if (localVersion) {
+    console.log("Local Solang version: " + localVersion);
+    return local;
   }
 
   const dest = path.join(context.globalStoragePath, platform);

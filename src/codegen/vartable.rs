@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::codegen::cfg::ControlFlowGraph;
+use crate::sema::ast::Namespace;
 use crate::sema::{ast::Type, symtable::Symtable};
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use solang_parser::pt;
 use std::collections::BTreeSet;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Variable {
     pub id: pt::Identifier,
     pub ty: Type,
@@ -27,7 +29,7 @@ pub struct DirtyTracker {
     set: BTreeSet<usize>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Storage {
     Constant(usize),
     Contract(BigInt),
@@ -73,11 +75,30 @@ impl Vartable {
         }
     }
 
+    /// Add variable with known variable no (e.g. from different function)
+    pub fn add_known(&mut self, var_no: usize, id: &pt::Identifier, ty: &Type) {
+        let id = Vartable::make_unique(&self.vars, id, var_no);
+
+        assert!(
+            self.vars
+                .insert(
+                    var_no,
+                    Variable {
+                        id,
+                        ty: ty.clone(),
+                        storage: Storage::Local,
+                    },
+                )
+                .is_none(),
+            "var_no should not already exist"
+        );
+    }
+
     fn make_unique(vars: &Vars, id: &pt::Identifier, no: usize) -> pt::Identifier {
         let mut id = id.clone();
 
         if id.name.is_empty() {
-            id.name = format!("temp.{}", no);
+            id.name = format!("temp.{no}");
         } else if vars.iter().any(|(_, var)| var.id.name == id.name) {
             id.name = format!("{}.{}", id.name, no);
         }
@@ -101,7 +122,7 @@ impl Vartable {
             var_no,
             Variable {
                 id: pt::Identifier {
-                    name: format!("temp.{}", var_no),
+                    name: format!("temp.{var_no}"),
                     loc: pt::Loc::Codegen,
                 },
                 ty: ty.clone(),
@@ -139,7 +160,7 @@ impl Vartable {
             var_no,
             Variable {
                 id: pt::Identifier {
-                    name: format!("{}.temp.{}", name, var_no),
+                    name: format!("{name}.temp.{var_no}"),
                     loc: pt::Loc::Codegen,
                 },
                 ty: ty.clone(),
@@ -150,8 +171,9 @@ impl Vartable {
         var_no
     }
 
-    pub fn drain(self) -> (Vars, usize) {
-        (self.vars, self.next_id)
+    pub fn finalize(self, ns: &mut Namespace, cfg: &mut ControlFlowGraph) {
+        ns.next_id = self.next_id;
+        cfg.vars = self.vars;
     }
 
     // In order to create phi nodes, we need to track what vars are set in a certain scope

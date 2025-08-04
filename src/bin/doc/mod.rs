@@ -2,6 +2,7 @@
 
 use handlebars::Handlebars;
 use serde::Serialize;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
@@ -153,7 +154,9 @@ fn get_tag_no<'a>(name: &str, no: usize, tags: &'a [ast::Tag]) -> Option<&'a str
         .map(|e| &e.value as &str)
 }
 
-pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
+/// Generate documentation from the doccomments. This may be replaced with force-doc
+/// one day (once it exists)
+pub fn generate_docs(outdir: &OsString, files: &[ast::Namespace], verbose: bool) {
     let mut top = Top {
         contracts: Vec::new(),
         events: Vec::new(),
@@ -180,16 +183,16 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
             }
 
             top.events.push(EventDecl {
-                name: &event_decl.name,
+                name: &event_decl.id.name,
                 contract: event_decl
                     .contract
-                    .map(|contract_no| file.contracts[contract_no].name.as_str()),
+                    .map(|contract_no| file.contracts[contract_no].id.name.as_str()),
                 title: get_tag("title", &event_decl.tags),
                 notice: get_tag("notice", &event_decl.tags),
                 author: get_tag("author", &event_decl.tags),
                 dev: get_tag("dev", &event_decl.tags),
                 anonymous: event_decl.anonymous,
-                loc: event_decl.loc,
+                loc: event_decl.id.loc,
                 field,
             });
         }
@@ -213,7 +216,7 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
                 }
 
                 top.structs.push(StructDecl {
-                    name: &struct_decl.name,
+                    name: &struct_decl.id.name,
                     contract: struct_decl.contract.as_deref(),
                     title: get_tag("title", &struct_decl.tags),
                     notice: get_tag("notice", &struct_decl.tags),
@@ -233,12 +236,12 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
 
             let mut field: Vec<&str> = Vec::new();
             field.resize(enum_decl.values.len(), "");
-            for (value, (_, pos)) in &enum_decl.values {
-                field[*pos] = value;
+            for (idx, (value, _)) in enum_decl.values.iter().enumerate() {
+                field[idx] = value;
             }
 
             top.enums.push(EnumDecl {
-                name: &enum_decl.name,
+                name: &enum_decl.id.name,
                 contract: enum_decl.contract.as_deref(),
                 title: get_tag("title", &enum_decl.tags),
                 notice: get_tag("notice", &enum_decl.tags),
@@ -302,7 +305,7 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
                 }
 
                 Function {
-                    name: &func.name,
+                    name: &func.id.name,
                     ty: format!("{}", func.ty),
                     mutability: format!("{}", func.mutability),
                     base_contract,
@@ -343,7 +346,7 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
             let mut base_variables = Vec::new();
             let mut base_functions = Vec::new();
 
-            for base_no in bases.into_iter() {
+            for base_no in bases {
                 if contract_no == base_no {
                     continue;
                 }
@@ -353,7 +356,7 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
                 for var in base
                     .variables
                     .iter()
-                    .map(|var| map_var(file, Some(&base.name), var))
+                    .map(|var| map_var(file, Some(&base.id.name), var))
                 {
                     base_variables.push(var);
                 }
@@ -362,7 +365,7 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
                     let f = &file.functions[*function_no];
 
                     if f.has_body {
-                        Some(map_func(file, Some(&base.name), f))
+                        Some(map_func(file, Some(&base.id.name), f))
                     } else {
                         None
                     }
@@ -373,7 +376,7 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
 
             top.contracts.push(Contract {
                 loc: contract.loc,
-                name: &contract.name,
+                name: &contract.id.name,
                 ty: format!("{}", contract.ty),
                 title: get_tag("title", &contract.tags),
                 notice: get_tag("notice", &contract.tags),
@@ -393,7 +396,7 @@ pub fn generate_docs(outdir: &str, files: &[ast::Namespace], verbose: bool) {
 
     reg.register_template_string(
         "soldoc",
-        r##"<!doctype html><head><title>soldoc</title><meta charset="utf-8"></head><body>
+        r#"<!doctype html><head><title>soldoc</title><meta charset="utf-8"></head><body>
 <h2>Contracts</h2>
 {{#each contracts}}
 <h3>{{ty}} {{name}}</h3>
@@ -467,7 +470,7 @@ Fields:<dl>
 {{#if author}}Author: {{author}}<p>{{/if}}
 Values: {{field}}
 {{/each}}
-</body></html>"##,
+</body></html>"#,
     )
     .expect("template should be good");
 
